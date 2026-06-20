@@ -1,0 +1,38 @@
+{
+    // === RUST ===
+    "rust-analyzer.checkOnSave": true,
+    "rust-analyzer.checkOnSave.command": "clippy",
+    "rust-analyzer.cargo.allFeatures": true,
+    // Format on save (Rust + others)
+    "editor.formatOnSave": true,
+    // === GLSL ===
+    "glsllint.additionalStageAssociations": {
+        ".vert": "vert",
+        ".vs": "vert",
+        ".frag": "frag",
+        ".fs": "frag",
+        ".gs": "geom",
+        ".geom": "geom",
+        ".comp": "comp",
+        ".tesc": "tesc",
+        ".tese": "tese"
+    },
+    // Optional: force GLSL for certain files
+    "files.associations": {
+        "*.vert": "glsl",
+        "*.frag": "glsl",
+        "*.glsl": "glsl"
+    },
+    // === QUALITY OF LIFE ===
+    "editor.tabSize": 4,
+    "editor.insertSpaces": true,
+    "editor.renderWhitespace": "selection",
+    "editor.inlineSuggest.enabled": true,
+    // === FILE WATCHING ===
+    "files.watcherExclude": {
+        "**/target/**": true
+    },
+    // === AUTO SAVE (for shader workflow later) ===
+    "files.autoSave": "afterDelay",
+    "files.autoSaveDelay": 500
+}
