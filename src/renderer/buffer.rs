@@ -1,17 +1,19 @@
+use std::sync::Arc;
+
 use glow::HasContext;
 
 pub struct GpuBuffer {
-    gl: glow::Context,
+    gl: Arc<glow::Context>,
     pub handle: glow::Buffer,
     pub target: u32,
 }
 
 impl GpuBuffer {
-    pub fn new(gl: &glow::Context, target: u32) -> Self {
+    pub fn new(gl: Arc<glow::Context>, target: u32) -> Self {
         unsafe {
             let handle = gl.create_buffer().expect("Failed to create buffer");
             Self {
-                gl: gl.clone(),
+                gl: gl,
                 handle,
                 target,
             }

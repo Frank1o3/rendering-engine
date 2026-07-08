@@ -1,14 +1,16 @@
+use std::sync::Arc;
+
 use glam::Mat4;
 use glow::HasContext;
 
 pub struct ShaderProgram {
-    gl: glow::Context,
+    gl: Arc<glow::Context>,
     pub program: glow::Program,
     loc_mvp: Option<glow::UniformLocation>, // Cached uniform location
 }
 
 impl ShaderProgram {
-    pub fn new(gl: &glow::Context, vs_src: &str, fs_src: &str) -> Result<Self, String> {
+    pub fn new(gl: Arc<glow::Context>, vs_src: &str, fs_src: &str) -> Result<Self, String> {
         unsafe {
             let vs = gl
                 .create_shader(glow::VERTEX_SHADER)
@@ -44,7 +46,7 @@ impl ShaderProgram {
             let loc_mvp = gl.get_uniform_location(program, "uMVP");
 
             Ok(Self {
-                gl: gl.clone(),
+                gl: gl,
                 program,
                 loc_mvp,
             })

@@ -1,4 +1,5 @@
 mod app;
+mod renderer;
 
 use anyhow::Result;
 use glutin::config::ConfigTemplateBuilder;

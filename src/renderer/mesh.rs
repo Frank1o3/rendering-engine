@@ -1,4 +1,6 @@
-use crate::buffer::GpuBuffer;
+use std::sync::Arc;
+
+use crate::renderer::buffer::GpuBuffer;
 use bytemuck::{Pod, Zeroable};
 use glow::HasContext;
 
@@ -16,19 +18,21 @@ pub struct MeshData {
 }
 
 pub struct Mesh {
-    gl: glow::Context,
+    gl: Arc<glow::Context>,
     pub vao: glow::VertexArray,
+    #[allow(unused)]
     pub vbo: GpuBuffer,
+    #[allow(unused)]
     pub ebo: GpuBuffer,
     pub index_count: i32,
 }
 
 impl Mesh {
-    pub fn new(gl: &glow::Context, data: &MeshData) -> Self {
+    pub fn new(gl: Arc<glow::Context>, data: &MeshData) -> Self {
         unsafe {
             let vao = gl.create_vertex_array().expect("Failed to create VAO");
-            let vbo = GpuBuffer::new(gl, glow::ARRAY_BUFFER);
-            let ebo = GpuBuffer::new(gl, glow::ELEMENT_ARRAY_BUFFER);
+            let vbo = GpuBuffer::new(gl.clone(), glow::ARRAY_BUFFER);
+            let ebo = GpuBuffer::new(gl.clone(), glow::ELEMENT_ARRAY_BUFFER);
 
             gl.bind_vertex_array(Some(vao));
 
@@ -43,12 +47,12 @@ impl Mesh {
 
             // Attribute 1: Color (u8 normalized to 0.0-1.0)
             gl.enable_vertex_attrib_array(1);
-            gl.vertex_attrib_pointer(1, 4, glow::UNSIGNED_BYTE, true, stride, 12);
+            gl.vertex_attrib_pointer_f32(1, 4, glow::UNSIGNED_BYTE, true, stride, 12);
 
             gl.bind_vertex_array(None);
 
             Self {
-                gl: gl.clone(),
+                gl: gl,
                 vao,
                 vbo,
                 ebo,

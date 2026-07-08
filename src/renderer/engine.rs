@@ -1,12 +1,11 @@
 use glam::Mat4;
 use glow::HasContext;
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use crate::math;
-use crate::mesh::{Mesh, MeshData, Vertex};
-use crate::shader::ShaderProgram;
-
-pub use crate::mesh::Vertex; // Re-export for external use
+use crate::renderer::math;
+use crate::renderer::mesh::{Mesh, MeshData};
+use crate::renderer::shader::ShaderProgram;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MeshId(u32);
@@ -44,7 +43,7 @@ pub struct RenderInput {
 }
 
 pub struct Renderer {
-    gl: glow::Context,
+    gl: Arc<glow::Context>,
     shaders: HashMap<ShaderId, ShaderProgram>,
     meshes: HashMap<MeshId, Mesh>,
     materials: HashMap<MaterialId, ShaderId>,
@@ -60,6 +59,8 @@ pub struct Renderer {
 
 impl Renderer {
     pub fn new(gl: glow::Context) -> Self {
+        let gl = Arc::new(gl);
+
         unsafe {
             // Default pipeline state
             gl.enable(glow::DEPTH_TEST);
@@ -83,7 +84,7 @@ impl Renderer {
     pub fn load_mesh(&mut self, data: MeshData) -> MeshId {
         let id = MeshId(self.next_mesh_id);
         self.next_mesh_id += 1;
-        let mesh = Mesh::new(&self.gl, &data);
+        let mesh = Mesh::new(self.gl.clone(), &data);
         self.meshes.insert(id, mesh);
         id
     }
@@ -91,7 +92,7 @@ impl Renderer {
     pub fn load_shader(&mut self, vs: &str, fs: &str) -> ShaderId {
         let id = ShaderId(self.next_shader_id);
         self.next_shader_id += 1;
-        let shader = ShaderProgram::new(&self.gl, vs, fs).expect("Failed to compile shader");
+        let shader = ShaderProgram::new(self.gl.clone(), vs, fs).expect("Failed to compile shader");
         self.shaders.insert(id, shader);
         id
     }
