@@ -23,8 +23,12 @@ use winit::{
 use glam::{Quat, Vec3};
 
 use crate::renderer::{
-    engine::{Camera, MaterialId, MeshId, RenderInput, RenderObject, Renderer, Transform},
+    engine::{MaterialId, MeshId, Renderer},
+    frame_data::{FrameData, RenderCommand},
+    math::{Transform, transform_to_model_matrix},
     mesh::{MeshData, Vertex},
+    // --- NEW PHASE 1 IMPORTS ---
+    triple_buffer::{WriteHandle, new_triple_buffer},
 };
 
 struct GlState {
@@ -34,6 +38,9 @@ struct GlState {
 
     // The renderer now OWNS the GL context, so we don't need `gl: Context` here anymore!
     renderer: Renderer,
+
+    // The game engine keeps the write handle to push frame data to the lock-free buffer
+    write_handle: WriteHandle<FrameData>,
 
     // Store the IDs so we don't recreate the mesh/shader every single frame
     mesh_id: MeshId,
@@ -125,8 +132,11 @@ impl ApplicationHandler for App {
         // 2. INITIALIZE RENDERER & LOAD ASSETS
         // ==========================================
 
-        // The renderer takes ownership of the GL context
-        let mut renderer = Renderer::new(gl);
+        // Create the lock-free Triple Buffer
+        let (write_handle, read_handle) = new_triple_buffer::<FrameData>();
+
+        // The renderer takes ownership of the GL context AND the read_handle
+        let mut renderer = Renderer::new(gl, read_handle);
 
         // Create a rectangle mesh (composed of 2 triangles)
         let vertices = vec![
@@ -153,29 +163,16 @@ impl ApplicationHandler for App {
         ];
         let mesh_id = renderer.load_mesh(MeshData { vertices, indices });
 
-        // Define GLSL Shaders
-        let vs_src = r#"
-            #version 460 core
-            layout (location = 0) in vec3 aPos;
-            layout (location = 1) in vec4 aColor;
-            out vec4 ourColor;
-            uniform mat4 uMVP;
-            void main() {
-                gl_Position = uMVP * vec4(aPos, 1.0);
-                ourColor = aColor;
-            }
-        "#;
+        // Load all shaders from the `shaders/` directory at the project root
+        let shader_map = renderer
+            .load_shaders_from_dir(std::path::Path::new("shaders"))
+            .expect("Failed to load shaders directory");
 
-        let fs_src = r#"
-            #version 460 core
-            in vec4 ourColor;
-            out vec4 FragColor;
-            void main() {
-                FragColor = ourColor;
-            }
-        "#;
+        // Grab the 'basic' shader we just loaded by its filename
+        let shader_id = *shader_map
+            .get("basic")
+            .expect("Missing 'basic.vert' and 'basic.frag' in shaders/ directory");
 
-        let shader_id = renderer.load_shader(vs_src, fs_src);
         let material_id = renderer.create_material(shader_id);
 
         // Save state for the render loop
@@ -184,6 +181,7 @@ impl ApplicationHandler for App {
             gl_context,
             gl_surface,
             renderer,
+            write_handle, // <--- Store the write handle in the game state
             mesh_id,
             material_id,
             width: 800,
@@ -224,36 +222,48 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::RedrawRequested => {
-                // 1. Build the Camera
-                let camera = Camera {
-                    position: Vec3::new(0.0, 0.0, 2.0), // Pull camera back slightly
-                    rotation: Quat::IDENTITY,
-                    fov: std::f32::consts::FRAC_PI_4, // 45 degrees
-                    aspect_ratio: state.width as f32 / state.height as f32,
-                    near: 0.1,
-                    far: 100.0,
-                };
+                // ==========================================
+                // 3. BUILD FRAME DATA (GAME ENGINE LOGIC)
+                // ==========================================
 
-                // 2. Build the Object Transform
+                // 1. Get the write slot and clear it (keeps the pre-allocated capacity!)
+                let frame = state.write_handle.write_slot();
+                frame.commands.clear();
+
+                // 2. Game engine pre-computes the model matrix (Dumb Renderer rule!)
                 let transform = Transform {
                     position: Vec3::ZERO,
                     rotation: Quat::IDENTITY,
                     scale: Vec3::ONE,
                 };
+                let model_matrix = transform_to_model_matrix(&transform);
 
-                // 3. Package into RenderInput
-                let render_input = RenderInput {
-                    camera,
-                    objects: vec![RenderObject {
-                        transform,
-                        mesh_id: state.mesh_id,
-                        material_id: state.material_id,
-                    }],
-                };
+                // 3. Push the command
+                frame.commands.push(RenderCommand {
+                    mesh_id: state.mesh_id,
+                    material_id: state.material_id,
+                    model_matrix,
+                    _padding: [0; 2], // Explicit padding to satisfy bytemuck alignment
+                });
 
+                // 4. Set camera data
+                frame.camera_position = Vec3::new(0.0, 0.0, 2.0); // Pull camera back slightly
+                frame.camera_rotation = Quat::IDENTITY;
+                frame.camera_fov = std::f32::consts::FRAC_PI_4; // 45 degrees
+                frame.camera_aspect_ratio = state.width as f32 / state.height as f32;
+                frame.camera_near = 0.1;
+                frame.camera_far = 100.0;
+
+                // 5. Publish to the renderer via the lock-free buffer
+                state.write_handle.publish();
+
+                // ==========================================
                 // 4. RENDER!
-                // The renderer handles clearing the screen, computing matrices, and drawing.
-                state.renderer.render(&render_input);
+                // ==========================================
+
+                // The renderer internally consumes the data from its ReadHandle.
+                // Notice it takes ZERO arguments!
+                state.renderer.render();
 
                 // 5. Swap buffers
                 state.gl_surface.swap_buffers(&state.gl_context).unwrap();

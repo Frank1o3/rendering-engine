@@ -1,79 +1,55 @@
-use glam::Mat4;
-use glow::HasContext;
-use std::collections::HashMap;
-use std::sync::Arc;
-
+// src/renderer/engine.rs
+use crate::renderer::frame_data::FrameData;
 use crate::renderer::math;
 use crate::renderer::mesh::{Mesh, MeshData};
 use crate::renderer::shader::ShaderProgram;
+use crate::renderer::triple_buffer::ReadHandle;
+use bytemuck::{Pod, Zeroable};
+use glow::HasContext;
+use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
+use std::sync::Arc;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct MeshId(u32);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Pod, Zeroable)]
+#[repr(transparent)]
+pub struct MeshId(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ShaderId(u32);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Pod, Zeroable)]
+#[repr(transparent)]
+pub struct ShaderId(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct MaterialId(u32);
-
-pub struct Camera {
-    pub position: glam::Vec3,
-    pub rotation: glam::Quat,
-    pub fov: f32,
-    pub aspect_ratio: f32,
-    pub near: f32,
-    pub far: f32,
-}
-
-pub struct Transform {
-    pub position: glam::Vec3,
-    pub rotation: glam::Quat,
-    pub scale: glam::Vec3,
-}
-
-pub struct RenderObject {
-    pub transform: Transform,
-    pub mesh_id: MeshId,
-    pub material_id: MaterialId,
-}
-
-pub struct RenderInput {
-    pub camera: Camera,
-    pub objects: Vec<RenderObject>,
-}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Pod, Zeroable)]
+#[repr(transparent)]
+pub struct MaterialId(pub u32);
 
 pub struct Renderer {
     gl: Arc<glow::Context>,
+    read_handle: ReadHandle<FrameData>, // <--- The renderer owns its data source
     shaders: HashMap<ShaderId, ShaderProgram>,
     meshes: HashMap<MeshId, Mesh>,
     materials: HashMap<MaterialId, ShaderId>,
-
-    // Pre-allocated scratch buffers to avoid per-frame heap allocations
-    mvp_matrices: Vec<Mat4>,
-    draw_indices: Vec<usize>,
-
+    draw_indices: Vec<usize>, // Pre-allocated scratch buffer for sorting
     next_mesh_id: u32,
     next_shader_id: u32,
     next_material_id: u32,
 }
 
 impl Renderer {
-    pub fn new(gl: glow::Context) -> Self {
+    /// The game engine passes the GL context AND the ReadHandle on creation.
+    pub fn new(gl: glow::Context, read_handle: ReadHandle<FrameData>) -> Self {
         let gl = Arc::new(gl);
-
         unsafe {
-            // Default pipeline state
             gl.enable(glow::DEPTH_TEST);
             gl.depth_func(glow::LESS);
             gl.clear_color(0.1, 0.1, 0.1, 1.0);
         }
-
         Self {
             gl: gl.clone(),
+            read_handle,
             shaders: HashMap::new(),
             meshes: HashMap::new(),
             materials: HashMap::new(),
-            mvp_matrices: Vec::with_capacity(1024),
             draw_indices: Vec::with_capacity(1024),
             next_mesh_id: 0,
             next_shader_id: 0,
@@ -97,6 +73,62 @@ impl Renderer {
         id
     }
 
+    /// Loads a single shader pair from files
+    pub fn load_shader_from_files(
+        &mut self,
+        vs_path: &Path,
+        fs_path: &Path,
+    ) -> Result<ShaderId, String> {
+        let id = ShaderId(self.next_shader_id);
+        self.next_shader_id += 1;
+        let shader = ShaderProgram::from_files(self.gl.clone(), vs_path, fs_path)?;
+        self.shaders.insert(id, shader);
+        Ok(id)
+    }
+
+    /// Scans a directory for `.vert` and `.frag` pairs, loads them all,
+    /// and returns a map of `ShaderName -> ShaderId`.
+    pub fn load_shaders_from_dir(
+        &mut self,
+        dir: &Path,
+    ) -> Result<HashMap<String, ShaderId>, String> {
+        let mut loaded_shaders = HashMap::new();
+
+        if !dir.is_dir() {
+            return Err(format!("Shader directory {:?} does not exist.", dir));
+        }
+
+        let entries = fs::read_dir(dir).map_err(|e| e.to_string())?;
+
+        for entry in entries {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+
+            // Look for vertex shaders
+            if path.extension().and_then(|s| s.to_str()) == Some("vert") {
+                let stem = path.file_stem().unwrap().to_str().unwrap().to_string();
+                let frag_path = path.with_extension("frag");
+
+                if frag_path.exists() {
+                    match self.load_shader_from_files(&path, &frag_path) {
+                        Ok(id) => {
+                            log::info!("Loaded shader: '{}'", stem);
+                            loaded_shaders.insert(stem, id);
+                        }
+                        Err(e) => {
+                            log::error!("Failed to compile shader '{}': {}", stem, e);
+                            return Err(e); // Fail fast on startup if a shader is broken
+                        }
+                    }
+                } else {
+                    log::warn!("Found {}.vert but no matching .frag file.", stem);
+                }
+            }
+        }
+
+        Ok(loaded_shaders)
+    }
+
     pub fn create_material(&mut self, shader_id: ShaderId) -> MaterialId {
         let id = MaterialId(self.next_material_id);
         self.next_material_id += 1;
@@ -110,54 +142,66 @@ impl Renderer {
         }
     }
 
-    pub fn render(&mut self, input: &RenderInput) {
+    /// The main render loop. No arguments needed!
+    /// It pulls data directly from the lock-free buffer.
+    pub fn render(&mut self) {
+        let mut current_frame = FrameData::default();
+
+        // 1. Consume the latest frame data
+        if !self.read_handle.consume(&mut current_frame) {
+            return; // Skip rendering if no new data is available
+        }
+
         unsafe {
             self.gl
                 .clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
         }
 
-        let view = math::camera_to_view_matrix(&input.camera);
-        let proj = math::camera_to_projection_matrix(&input.camera, input.camera.aspect_ratio);
+        // 2. Compute View and Projection matrices
+        let view = math::camera_to_view_matrix(
+            current_frame.camera_position,
+            current_frame.camera_rotation,
+        );
+        let proj = math::camera_to_projection_matrix(
+            current_frame.camera_fov,
+            current_frame.camera_aspect_ratio,
+            current_frame.camera_near,
+            current_frame.camera_far,
+        );
         let vp = proj * view;
 
-        // 1. Reuse pre-allocated scratch memory
-        self.mvp_matrices.clear();
+        // 3. Prepare sorting indices
         self.draw_indices.clear();
-        self.draw_indices.extend(0..input.objects.len());
-
-        // 2. Sort objects by material to BATCH draw calls (minimizes shader state changes)
+        self.draw_indices.extend(0..current_frame.commands.len());
         self.draw_indices
-            .sort_by_key(|&i| input.objects[i].material_id);
+            .sort_by_key(|&i| current_frame.commands[i].material_id);
 
         let mut current_material_id = None;
 
+        // 4. Batched Draw Loop
         for &idx in &self.draw_indices {
-            let obj = &input.objects[idx];
+            let cmd = &current_frame.commands[idx];
 
-            // 3. Bind shader ONLY if the material changed
-            if current_material_id != Some(obj.material_id) {
-                if let Some(&shader_id) = self.materials.get(&obj.material_id) {
+            // Bind shader ONLY if the material changed
+            if current_material_id != Some(cmd.material_id) {
+                if let Some(&shader_id) = self.materials.get(&cmd.material_id) {
                     if let Some(shader) = self.shaders.get(&shader_id) {
                         unsafe {
                             self.gl.use_program(Some(shader.program));
                         }
-                        current_material_id = Some(obj.material_id);
+                        current_material_id = Some(cmd.material_id);
                     }
                 }
             }
 
-            // 4. Compute MVP
-            let model = math::transform_to_model_matrix(&obj.transform);
-            let mvp = vp * model;
-            self.mvp_matrices.push(mvp); // Push to pre-allocated buffer
+            // The model matrix is ALREADY pre-computed by the game engine!
+            let mvp = vp * cmd.model_matrix;
 
-            // 5. Bind mesh and draw
-            if let Some(mesh) = self.meshes.get(&obj.mesh_id) {
+            if let Some(mesh) = self.meshes.get(&cmd.mesh_id) {
                 unsafe {
                     self.gl.bind_vertex_array(Some(mesh.vao));
 
-                    // Set MVP uniform (Shader is already bound)
-                    if let Some(&shader_id) = self.materials.get(&obj.material_id) {
+                    if let Some(&shader_id) = self.materials.get(&cmd.material_id) {
                         if let Some(shader) = self.shaders.get(&shader_id) {
                             shader.set_mvp(&mvp);
                         }
