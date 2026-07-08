@@ -22,12 +22,11 @@ use winit::{
 // 1. Import your renderer types
 use glam::{Quat, Vec3};
 
-use crate::renderer::{
+use rendering_engine::{
     engine::{MaterialId, MeshId, Renderer},
     frame_data::{FrameData, RenderCommand},
     math::{Transform, transform_to_model_matrix},
     mesh::{MeshData, Vertex},
-    // --- NEW PHASE 1 IMPORTS ---
     triple_buffer::{WriteHandle, new_triple_buffer},
 };
 

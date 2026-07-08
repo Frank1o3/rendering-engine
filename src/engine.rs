@@ -1,9 +1,9 @@
 // src/renderer/engine.rs
-use crate::renderer::frame_data::FrameData;
-use crate::renderer::math;
-use crate::renderer::mesh::{Mesh, MeshData};
-use crate::renderer::shader::ShaderProgram;
-use crate::renderer::triple_buffer::ReadHandle;
+use crate::frame_data::FrameData;
+use crate::math;
+use crate::mesh::{Mesh, MeshData};
+use crate::shader::ShaderProgram;
+use crate::triple_buffer::ReadHandle;
 use bytemuck::{Pod, Zeroable};
 use glow::HasContext;
 use std::collections::HashMap;

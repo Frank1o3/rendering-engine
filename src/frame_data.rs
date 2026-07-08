@@ -1,5 +1,5 @@
 // src/renderer/frame_data.rs
-use crate::renderer::engine::{MaterialId, MeshId};
+use crate::engine::{MaterialId, MeshId};
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Quat, Vec3};
 

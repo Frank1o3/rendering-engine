@@ -3,6 +3,10 @@ name = "rendering-engine"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "rendering_engine"
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 anyhow = "1.0.102"
 bytemuck = { version = "1.25.0", features = ["derive"] }

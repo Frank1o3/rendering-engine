@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::renderer::buffer::GpuBuffer;
+use crate::buffer::GpuBuffer;
 use bytemuck::{Pod, Zeroable};
 use glow::HasContext;
 
