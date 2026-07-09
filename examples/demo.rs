@@ -223,7 +223,7 @@ impl ApplicationHandler for DemoApp {
         let window_attributes = Window::default_attributes()
             .with_title("3D Demo - Click ESC to capture/release mouse")
             .with_inner_size(PhysicalSize::new(1280, 720))
-            .with_resizable(false);
+            .with_resizable(true);
 
         let display_builder = DisplayBuilder::new().with_window_attributes(Some(window_attributes));
 
@@ -281,7 +281,7 @@ impl ApplicationHandler for DemoApp {
 
         info!("OpenGL context successfully initialized!");
 
-        let grid_size = 100;
+        let grid_size = 25;
         let offset: f32 = 1.1;
 
         // Create Triple Buffer & Renderer
@@ -329,7 +329,7 @@ impl ApplicationHandler for DemoApp {
             camera_yaw: 0.0,
             camera_pitch: 0.0,
             keys: Keys::default(),
-            cursor_grabbed: false,
+            cursor_grabbed: true,
             last_frame: Instant::now(),
             frame_count: 0,
             last_fps_update: Instant::now(),
@@ -486,8 +486,8 @@ impl ApplicationHandler for DemoApp {
                 let fps = state.current_fps as u32;
                 let digits = [(fps / 100) % 10, (fps / 10) % 10, fps % 10];
 
-                let pixel_size = 6.0; // Spacing/grid step size for the font pixels
-                let square_size = 6.0; // Visual size of each individual square forming the numbers
+                let pixel_size = 8.0; // Spacing/grid step size for the font pixels
+                let square_size = 7.9; // Visual size of each individual square forming the numbers
                 let mut cursor_x = 10.0; // 10px padding from left
                 let cursor_y = 10.0; // 10px padding from top
 

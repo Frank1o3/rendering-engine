@@ -74,7 +74,7 @@ impl Renderer {
             meshes: HashMap::new(),
             materials: HashMap::new(),
             sorted_instances: Vec::with_capacity(MAX_OBJECTS),
-            indirect_cmds: Vec::with_capacity(512 * 2),
+            indirect_cmds: Vec::with_capacity(1024),
             transform_buffer,
             next_mesh_id: 0,
             next_shader_id: 0,
