@@ -74,13 +74,13 @@ impl Renderer {
             meshes: HashMap::new(),
             materials: HashMap::new(),
             sorted_instances: Vec::with_capacity(MAX_OBJECTS),
-            indirect_cmds: Vec::with_capacity(1024),
+            indirect_cmds: Vec::with_capacity(512 * 2),
             transform_buffer,
             next_mesh_id: 0,
             next_shader_id: 0,
             next_material_id: 0,
-            width: 800,  // Default window width
-            height: 600, // Default window height
+            width: 1280, // Default window width
+            height: 720, // Default window height
             scene: Scene::new(),
             mdi_strategy: MdiStrategy::Multi,
             indirect_buffer,

@@ -281,9 +281,15 @@ impl ApplicationHandler for DemoApp {
 
         info!("OpenGL context successfully initialized!");
 
+        let grid_size = 100;
+        let offset: f32 = 1.1;
+
         // Create Triple Buffer & Renderer
         let (write_handle, read_handle) = new_triple_buffer::<FrameData>();
         let mut renderer = Renderer::new(gl, read_handle);
+
+        // Set Multi Draw Indirect Protocol
+        renderer.set_mdi_strategy(rendering_engine::MdiStrategy::Multi);
 
         // Load Assets
         let mesh_id = renderer.load_mesh(create_cube_mesh());
@@ -300,10 +306,9 @@ impl ApplicationHandler for DemoApp {
         let ui_material_id = renderer.create_material(ui_shader_id);
 
         // Pre-register static cubes at startup: 10,201 cubes (101x101)
-        let grid_size = 5;
         for x in -grid_size..=grid_size {
             for z in -grid_size..=grid_size {
-                let position = Vec3::new(x as f32 * 2.5, 0.0, z as f32 * 2.5);
+                let position = Vec3::new(x as f32 * offset, 0.0, z as f32 * offset);
                 let handle = renderer.add_object(mesh_id, material_id, ObjectKind::Static);
                 renderer.set_transform(handle, position, Quat::IDENTITY, 1.0);
             }
