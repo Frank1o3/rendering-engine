@@ -6,7 +6,7 @@ use glutin::{
         PossiblyCurrentContext, Version,
     },
     display::{GetGlDisplay, GlDisplay},
-    surface::{GlSurface, Surface, WindowSurface},
+    surface::{GlSurface, Surface, SwapInterval, WindowSurface},
 };
 use glutin_winit::{DisplayBuilder, GlWindow};
 use log::info;
@@ -40,7 +40,7 @@ struct Keys {
     s: bool,
     d: bool,
     space: bool,
-    shift: bool,
+    lctrl: bool,
 }
 impl Default for Keys {
     fn default() -> Self {
@@ -50,7 +50,7 @@ impl Default for Keys {
             s: false,
             d: false,
             space: false,
-            shift: false,
+            lctrl: false,
         }
     }
 }
@@ -91,6 +91,7 @@ struct DemoState {
 pub struct DemoApp {
     template: ConfigTemplateBuilder,
     state: Option<DemoState>,
+    pending_grab: bool,
 }
 
 impl DemoApp {
@@ -98,6 +99,7 @@ impl DemoApp {
         Self {
             state: None,
             template,
+            pending_grab: true,
         }
     }
 }
@@ -176,10 +178,22 @@ fn create_cube_mesh() -> MeshData {
 // A simple 1x1 white quad for UI rendering
 fn create_quad_mesh() -> MeshData {
     let vertices = vec![
-        Vertex { position: [0.0, 0.0, 0.0], color: [255, 255, 255, 255] },
-        Vertex { position: [1.0, 0.0, 0.0], color: [255, 255, 255, 255] },
-        Vertex { position: [1.0, 1.0, 0.0], color: [255, 255, 255, 255] },
-        Vertex { position: [0.0, 1.0, 0.0], color: [255, 255, 255, 255] },
+        Vertex {
+            position: [0.0, 0.0, 0.0],
+            color: [255, 255, 255, 255],
+        },
+        Vertex {
+            position: [1.0, 0.0, 0.0],
+            color: [255, 255, 255, 255],
+        },
+        Vertex {
+            position: [1.0, 1.0, 0.0],
+            color: [255, 255, 255, 255],
+        },
+        Vertex {
+            position: [0.0, 1.0, 0.0],
+            color: [255, 255, 255, 255],
+        },
     ];
     let indices = vec![0, 1, 2, 2, 3, 0];
     MeshData { vertices, indices }
@@ -211,7 +225,8 @@ impl ApplicationHandler for DemoApp {
 
         let window_attributes = Window::default_attributes()
             .with_title("3D Demo - Click ESC to capture/release mouse")
-            .with_inner_size(PhysicalSize::new(1280, 720));
+            .with_inner_size(PhysicalSize::new(1280, 720))
+            .with_resizable(false);
 
         let display_builder = DisplayBuilder::new().with_window_attributes(Some(window_attributes));
 
@@ -256,6 +271,10 @@ impl ApplicationHandler for DemoApp {
             .make_current(&gl_surface)
             .expect("Failed to make Gl context current...");
 
+        gl_surface
+            .set_swap_interval(&gl_context, SwapInterval::DontWait)
+            .expect("Failed to disable VSync");
+
         let gl = unsafe {
             Context::from_loader_function(|symbol| {
                 let c_str = CString::new(symbol).unwrap();
@@ -271,10 +290,10 @@ impl ApplicationHandler for DemoApp {
 
         // Load Assets
         let mesh_id = renderer.load_mesh(create_cube_mesh());
-        
+
         // Load UI Mesh (A simple 1x1 white quad)
         let ui_mesh_id = renderer.load_mesh(create_quad_mesh());
-        
+
         let shader_map = renderer
             .load_shaders_from_dir(std::path::Path::new("shaders"))
             .expect("Failed to load shaders");
@@ -336,6 +355,7 @@ impl ApplicationHandler for DemoApp {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 let pressed = event.state == ElementState::Pressed;
+
                 if let PhysicalKey::Code(keycode) = event.physical_key {
                     match keycode {
                         KeyCode::KeyW => state.keys.w = pressed,
@@ -343,28 +363,55 @@ impl ApplicationHandler for DemoApp {
                         KeyCode::KeyS => state.keys.s = pressed,
                         KeyCode::KeyD => state.keys.d = pressed,
                         KeyCode::Space => state.keys.space = pressed,
-                        KeyCode::ShiftLeft | KeyCode::ShiftRight => state.keys.shift = pressed,
-                        KeyCode::Escape => {
+                        KeyCode::ControlLeft => state.keys.lctrl = pressed,
+
+                        KeyCode::Escape if pressed => {
                             if state.cursor_grabbed {
-                                let _ = state.window.set_cursor_grab(CursorGrabMode::None);
-                                state.window.set_cursor_visible(true);
-                                state.cursor_grabbed = false;
+                                match state.window.set_cursor_grab(CursorGrabMode::None) {
+                                    Ok(_) => {
+                                        state.window.set_cursor_visible(true);
+                                        state.cursor_grabbed = false;
+                                    }
+                                    Err(e) => {
+                                        println!("failed to release cursor: {e:?}");
+                                    }
+                                }
                             } else {
-                                let _ = state
-                                    .window
-                                    .set_cursor_grab(CursorGrabMode::Confined)
-                                    .or_else(|_| {
-                                        state.window.set_cursor_grab(CursorGrabMode::Locked)
-                                    });
-                                state.window.set_cursor_visible(false);
-                                state.cursor_grabbed = true;
+                                // Defer grabbing until the next frame.
+                                self.pending_grab = true;
                             }
                         }
+
                         _ => {}
                     }
                 }
             }
             WindowEvent::RedrawRequested => {
+                if self.pending_grab {
+                    self.pending_grab = false;
+
+                    match state.window.set_cursor_grab(CursorGrabMode::Confined) {
+                        Ok(_) => {
+                            println!("confined");
+                            state.window.set_cursor_visible(false);
+                            state.cursor_grabbed = true;
+                        }
+                        Err(e) => {
+                            println!("confined failed: {e:?}");
+
+                            match state.window.set_cursor_grab(CursorGrabMode::Locked) {
+                                Ok(_) => {
+                                    println!("locked");
+                                    state.window.set_cursor_visible(false);
+                                    state.cursor_grabbed = true;
+                                }
+                                Err(e) => {
+                                    println!("locked failed: {e:?}");
+                                }
+                            }
+                        }
+                    }
+                }
                 // FPS Tracking
                 state.frame_count += 1;
                 let now = Instant::now();
@@ -406,7 +453,7 @@ impl ApplicationHandler for DemoApp {
                 if state.keys.space {
                     velocity += Vec3::Y;
                 }
-                if state.keys.shift {
+                if state.keys.lctrl {
                     velocity -= Vec3::Y;
                 }
 
@@ -421,8 +468,8 @@ impl ApplicationHandler for DemoApp {
                 frame.ui_commands.clear(); // Clear UI commands
 
                 // Spawn an 11x11 grid of cubes (121 objects)
-                for x in -5..=5 {
-                    for z in -5..=5 {
+                for x in -50..=50 {
+                    for z in -50..=50 {
                         let transform = Transform {
                             position: Vec3::new(x as f32 * 2.5, 0.0, z as f32 * 2.5),
                             rotation: Quat::IDENTITY,
@@ -443,11 +490,7 @@ impl ApplicationHandler for DemoApp {
                 // BUILD UI (Zero-Allocation Bitmap Font)
                 // ==========================================
                 let fps = state.current_fps as u32;
-                let digits = [
-                    (fps / 100) % 10,
-                    (fps / 10) % 10,
-                    fps % 10,
-                ];
+                let digits = [(fps / 100) % 10, (fps / 10) % 10, fps % 10];
 
                 let pixel_size = 4.0; // Each "pixel" of the font is 4x4 screen pixels
                 let mut cursor_x = 10.0; // 10px padding from left
@@ -468,8 +511,11 @@ impl ApplicationHandler for DemoApp {
                                     let y = cursor_y + row_idx as f32 * pixel_size;
 
                                     // Scale the 1x1 quad to pixel_size, and translate to screen pos
-                                    let model = glam::Mat4::from_scale(glam::Vec3::new(pixel_size, pixel_size, 1.0))
-                                              * glam::Mat4::from_translation(glam::Vec3::new(x, y, 0.0));
+                                    let model = glam::Mat4::from_scale(glam::Vec3::new(
+                                        pixel_size, pixel_size, 1.0,
+                                    )) * glam::Mat4::from_translation(glam::Vec3::new(
+                                        x, y, 0.0,
+                                    ));
 
                                     frame.ui_commands.push(RenderCommand {
                                         mesh_id: state.ui_mesh_id,
