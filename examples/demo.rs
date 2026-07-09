@@ -86,8 +86,6 @@ struct DemoState {
 pub struct DemoApp {
     template: ConfigTemplateBuilder,
     state: Option<DemoState>,
-    frame_count: u32,
-    last_fps_update: Instant,
 }
 
 impl DemoApp {
@@ -95,8 +93,6 @@ impl DemoApp {
         Self {
             state: None,
             template,
-            frame_count: 0,
-            last_fps_update: Instant::now(),
         }
     }
 }
