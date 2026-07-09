@@ -28,31 +28,50 @@ pub struct Mesh {
 }
 
 impl Mesh {
-    pub fn new(gl: Arc<glow::Context>, data: &MeshData) -> Self {
+    pub fn new(gl: Arc<glow::Context>, data: &MeshData, transform_buffer: glow::Buffer) -> Self {
         unsafe {
             let vao = gl.create_vertex_array().expect("Failed to create VAO");
             let vbo = GpuBuffer::new(gl.clone(), glow::ARRAY_BUFFER);
             let ebo = GpuBuffer::new(gl.clone(), glow::ELEMENT_ARRAY_BUFFER);
 
             gl.bind_vertex_array(Some(vao));
-
             vbo.upload_data(&data.vertices, glow::STATIC_DRAW);
             ebo.upload_data(&data.indices, glow::STATIC_DRAW);
 
-            let stride = std::mem::size_of::<Vertex>() as i32; // 16 bytes
+            let stride = std::mem::size_of::<Vertex>() as i32;
 
-            // Attribute 0: Position (f32)
+            // Attribute 0: Position
             gl.enable_vertex_attrib_array(0);
             gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, stride, 0);
 
-            // Attribute 1: Color (u8 normalized to 0.0-1.0)
+            // Attribute 1: Color
             gl.enable_vertex_attrib_array(1);
             gl.vertex_attrib_pointer_f32(1, 4, glow::UNSIGNED_BYTE, true, stride, 12);
+
+            // ==========================================
+            // NEW: Instanced Model Matrix (Locations 2, 3, 4, 5)
+            // ==========================================
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(transform_buffer));
+            let mat_stride = 64; // 16 bytes * 4 columns
+            for i in 0..4 {
+                let loc = 2 + i;
+                gl.enable_vertex_attrib_array(loc);
+                gl.vertex_attrib_pointer_f32(
+                    loc,
+                    4,
+                    glow::FLOAT,
+                    false,
+                    mat_stride,
+                    (i * 16) as i32,
+                );
+                // Divisor = 1 means this attribute updates once per INSTANCE, not per vertex
+                gl.vertex_attrib_divisor(loc, 1);
+            }
 
             gl.bind_vertex_array(None);
 
             Self {
-                gl: gl,
+                gl,
                 vao,
                 vbo,
                 ebo,

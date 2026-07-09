@@ -1,4 +1,5 @@
 // src/renderer/engine.rs
+use crate::buffer::PersistentMappedBuffer;
 use crate::frame_data::FrameData;
 use crate::math;
 use crate::mesh::{Mesh, MeshData};
@@ -10,6 +11,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
+
+const MAX_OBJECTS: usize = 65536;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Pod, Zeroable)]
 #[repr(transparent)]
@@ -33,6 +36,7 @@ pub struct Renderer {
     next_mesh_id: u32,
     next_shader_id: u32,
     next_material_id: u32,
+    transform_buffer: PersistentMappedBuffer,
 }
 
 impl Renderer {
@@ -44,13 +48,21 @@ impl Renderer {
             gl.depth_func(glow::LESS);
             gl.clear_color(0.1, 0.1, 0.1, 1.0);
         }
+
+        // Allocate persistent buffer for transforms (65536 * 64 bytes = 4MB)
+        let transform_buffer = PersistentMappedBuffer::new(
+            gl.clone(),
+            MAX_OBJECTS * std::mem::size_of::<glam::Mat4>(),
+        );
+
         Self {
             gl: gl.clone(),
             read_handle,
             shaders: HashMap::new(),
             meshes: HashMap::new(),
             materials: HashMap::new(),
-            draw_indices: Vec::with_capacity(1024),
+            draw_indices: Vec::with_capacity(MAX_OBJECTS),
+            transform_buffer,
             next_mesh_id: 0,
             next_shader_id: 0,
             next_material_id: 0,
@@ -60,7 +72,7 @@ impl Renderer {
     pub fn load_mesh(&mut self, data: MeshData) -> MeshId {
         let id = MeshId(self.next_mesh_id);
         self.next_mesh_id += 1;
-        let mesh = Mesh::new(self.gl.clone(), &data);
+        let mesh = Mesh::new(self.gl.clone(), &data, self.transform_buffer.handle);
         self.meshes.insert(id, mesh);
         id
     }
@@ -146,10 +158,8 @@ impl Renderer {
     /// It pulls data directly from the lock-free buffer.
     pub fn render(&mut self) {
         let mut current_frame = FrameData::default();
-
-        // 1. Consume the latest frame data
         if !self.read_handle.consume(&mut current_frame) {
-            return; // Skip rendering if no new data is available
+            return;
         }
 
         unsafe {
@@ -157,7 +167,7 @@ impl Renderer {
                 .clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
         }
 
-        // 2. Compute View and Projection matrices
+        // 1. Compute VP once per frame
         let view = math::camera_to_view_matrix(
             current_frame.camera_position,
             current_frame.camera_rotation,
@@ -170,50 +180,71 @@ impl Renderer {
         );
         let vp = proj * view;
 
-        // 3. Prepare sorting indices
+        // 2. Sort by (material, mesh) to batch draw calls
         self.draw_indices.clear();
         self.draw_indices.extend(0..current_frame.commands.len());
-        self.draw_indices
-            .sort_by_key(|&i| current_frame.commands[i].material_id);
+        self.draw_indices.sort_by_key(|&i| {
+            let cmd = &current_frame.commands[i];
+            (cmd.material_id, cmd.mesh_id) // Group by BOTH!
+        });
 
-        let mut current_material_id = None;
+        // 3. Group and Dispatch
+        let mut i = 0;
+        let mut transform_offset = 0;
 
-        // 4. Batched Draw Loop
-        for &idx in &self.draw_indices {
-            let cmd = &current_frame.commands[idx];
+        while i < self.draw_indices.len() {
+            let start_idx = self.draw_indices[i];
+            let mat_id = current_frame.commands[start_idx].material_id;
+            let mesh_id = current_frame.commands[start_idx].mesh_id;
 
-            // Bind shader ONLY if the material changed
-            if current_material_id != Some(cmd.material_id) {
-                if let Some(&shader_id) = self.materials.get(&cmd.material_id) {
-                    if let Some(shader) = self.shaders.get(&shader_id) {
-                        unsafe {
-                            self.gl.use_program(Some(shader.program));
-                        }
-                        current_material_id = Some(cmd.material_id);
-                    }
+            // Find the end of this group
+            let mut group_end = i + 1;
+            while group_end < self.draw_indices.len() {
+                let idx = self.draw_indices[group_end];
+                let cmd = &current_frame.commands[idx];
+                if cmd.material_id != mat_id || cmd.mesh_id != mesh_id {
+                    break;
                 }
+                group_end += 1;
             }
 
-            // The model matrix is ALREADY pre-computed by the game engine!
-            let mvp = vp * cmd.model_matrix;
+            let mesh = self.meshes.get(&mesh_id).unwrap();
+            let shader_id = self.materials.get(&mat_id).unwrap();
+            let shader = self.shaders.get(shader_id).unwrap();
 
-            if let Some(mesh) = self.meshes.get(&cmd.mesh_id) {
-                unsafe {
-                    self.gl.bind_vertex_array(Some(mesh.vao));
+            unsafe {
+                // Bind state ONCE for this entire group
+                self.gl.use_program(Some(shader.program));
+                shader.set_vp(&vp);
+                self.gl.bind_vertex_array(Some(mesh.vao));
 
-                    if let Some(&shader_id) = self.materials.get(&cmd.material_id) {
-                        if let Some(shader) = self.shaders.get(&shader_id) {
-                            shader.set_mvp(&mvp);
-                        }
-                    }
+                let instance_count = (group_end - i) as i32;
+                let base_instance = transform_offset as u32;
 
-                    self.gl
-                        .draw_elements(glow::TRIANGLES, mesh.index_count, glow::UNSIGNED_INT, 0);
+                // Write transforms directly to persistent GPU memory
+                for j in i..group_end {
+                    let cmd_idx = self.draw_indices[j];
+                    let cmd = &current_frame.commands[cmd_idx];
+                    self.transform_buffer
+                        .write_mat4(transform_offset, &cmd.model_matrix);
+                    transform_offset += 1;
                 }
+
+                // THE MAGIC CALL: Draw all instances in this group in exactly 1 CPU command!
+                self.gl.draw_elements_instanced_base_vertex_base_instance(
+                    glow::TRIANGLES,
+                    mesh.index_count,   // count: i32
+                    glow::UNSIGNED_INT, // element_type: u32
+                    0, // offset: i32 (0 bytes into the EBO, since we bind the VAO per group)
+                    instance_count, // instance_count: i32 (The number of objects in this batch)
+                    0, // base_vertex: i32 (0, because we aren't merging meshes into one giant VBO)
+                    base_instance, // base_instance: u32 (Offsets the instanced Mat4 attributes in our persistent buffer!)
+                );
             }
+
+            i = group_end;
         }
 
-        // Clean up state
         unsafe {
             self.gl.bind_vertex_array(None);
             self.gl.use_program(None);

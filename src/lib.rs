@@ -15,4 +15,3 @@ pub use engine::Renderer;
 pub use frame_data::{FrameData, RenderCommand};
 pub use mesh::{Mesh, MeshData, Vertex};
 pub use triple_buffer::{ReadHandle, WriteHandle, new_triple_buffer};
-

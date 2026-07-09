@@ -7,7 +7,7 @@ use std::sync::Arc;
 pub struct ShaderProgram {
     gl: Arc<glow::Context>,
     pub program: glow::Program,
-    loc_mvp: Option<glow::UniformLocation>,
+    loc_vp: Option<glow::UniformLocation>,
 }
 
 impl ShaderProgram {
@@ -53,12 +53,13 @@ impl ShaderProgram {
             gl.delete_shader(vs);
             gl.delete_shader(fs);
 
-            let loc_mvp = gl.get_uniform_location(program, "uMVP");
+            // Cache the new VP uniform location
+            let loc_vp = gl.get_uniform_location(program, "uVP");
 
             Ok(Self {
                 gl,
                 program,
-                loc_mvp,
+                loc_vp,
             })
         }
     }
@@ -77,11 +78,11 @@ impl ShaderProgram {
         Self::new(gl, &vs_src, &fs_src)
     }
 
-    // Assumes the program is already bound! (Minimizes state changes)
-    pub fn set_mvp(&self, mvp: &Mat4) {
+    // Set the View-Projection matrix
+    pub fn set_vp(&self, vp: &glam::Mat4) {
         unsafe {
             self.gl
-                .uniform_matrix_4_f32_slice(self.loc_mvp.as_ref(), false, &mvp.to_cols_array());
+                .uniform_matrix_4_f32_slice(self.loc_vp.as_ref(), false, &vp.to_cols_array());
         }
     }
 }
