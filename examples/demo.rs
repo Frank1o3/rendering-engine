@@ -65,6 +65,11 @@ struct DemoState {
     mesh_id: MeshId,
     material_id: MaterialId,
 
+    // UI State
+    ui_mesh_id: MeshId,
+    ui_material_id: MaterialId,
+    current_fps: f32,
+
     width: u32,
     height: u32,
 
@@ -168,6 +173,32 @@ fn create_cube_mesh() -> MeshData {
     MeshData { vertices, indices }
 }
 
+// A simple 1x1 white quad for UI rendering
+fn create_quad_mesh() -> MeshData {
+    let vertices = vec![
+        Vertex { position: [0.0, 0.0, 0.0], color: [255, 255, 255, 255] },
+        Vertex { position: [1.0, 0.0, 0.0], color: [255, 255, 255, 255] },
+        Vertex { position: [1.0, 1.0, 0.0], color: [255, 255, 255, 255] },
+        Vertex { position: [0.0, 1.0, 0.0], color: [255, 255, 255, 255] },
+    ];
+    let indices = vec![0, 1, 2, 2, 3, 0];
+    MeshData { vertices, indices }
+}
+
+// A simple 3x5 bitmap font for digits 0-9
+const FONT: [[u8; 5]; 10] = [
+    [0b111, 0b101, 0b101, 0b101, 0b111], // 0
+    [0b010, 0b010, 0b010, 0b010, 0b010], // 1
+    [0b111, 0b001, 0b111, 0b100, 0b111], // 2
+    [0b111, 0b001, 0b111, 0b001, 0b111], // 3
+    [0b101, 0b101, 0b111, 0b001, 0b001], // 4
+    [0b111, 0b100, 0b111, 0b001, 0b111], // 5
+    [0b111, 0b100, 0b111, 0b101, 0b111], // 6
+    [0b111, 0b001, 0b010, 0b010, 0b010], // 7
+    [0b111, 0b101, 0b111, 0b101, 0b111], // 8
+    [0b111, 0b101, 0b111, 0b001, 0b111], // 9
+];
+
 // ==========================================
 // 3. APPLICATION HANDLER (GAME LOOP)
 // ==========================================
@@ -240,11 +271,17 @@ impl ApplicationHandler for DemoApp {
 
         // Load Assets
         let mesh_id = renderer.load_mesh(create_cube_mesh());
+        
+        // Load UI Mesh (A simple 1x1 white quad)
+        let ui_mesh_id = renderer.load_mesh(create_quad_mesh());
+        
         let shader_map = renderer
             .load_shaders_from_dir(std::path::Path::new("shaders"))
             .expect("Failed to load shaders");
         let shader_id = *shader_map.get("basic").expect("Missing 'basic' shader");
         let material_id = renderer.create_material(shader_id);
+        // Reuse the same shader for the UI, it just outputs the vertex color!
+        let ui_material_id = renderer.create_material(shader_id);
 
         self.state = Some(DemoState {
             window,
@@ -254,6 +291,9 @@ impl ApplicationHandler for DemoApp {
             write_handle,
             mesh_id,
             material_id,
+            ui_mesh_id,
+            ui_material_id,
+            current_fps: 0.0,
             width: 1280,
             height: 720,
             camera_pos: Vec3::new(0.0, 2.0, 10.0), // Start slightly above and back
@@ -330,8 +370,7 @@ impl ApplicationHandler for DemoApp {
                 let now = Instant::now();
                 let elapsed = (now - state.last_fps_update).as_secs_f32();
                 if elapsed >= 1.0 {
-                    let fps = state.frame_count as f32 / elapsed;
-                    log::info!("FPS: {:.2} | Objects: {}", fps, 121); // 121 cubes in the grid
+                    state.current_fps = state.frame_count as f32 / elapsed;
                     state.frame_count = 0;
                     state.last_fps_update = now;
                 }
@@ -379,6 +418,7 @@ impl ApplicationHandler for DemoApp {
                 // 3. Build FrameData
                 let frame = state.write_handle.write_slot();
                 frame.commands.clear(); // Keep capacity, zero allocation!
+                frame.ui_commands.clear(); // Clear UI commands
 
                 // Spawn an 11x11 grid of cubes (121 objects)
                 for x in -5..=5 {
@@ -396,6 +436,51 @@ impl ApplicationHandler for DemoApp {
                             model_matrix,
                             _padding: [0; 2],
                         });
+                    }
+                }
+
+                // ==========================================
+                // BUILD UI (Zero-Allocation Bitmap Font)
+                // ==========================================
+                let fps = state.current_fps as u32;
+                let digits = [
+                    (fps / 100) % 10,
+                    (fps / 10) % 10,
+                    fps % 10,
+                ];
+
+                let pixel_size = 4.0; // Each "pixel" of the font is 4x4 screen pixels
+                let mut cursor_x = 10.0; // 10px padding from left
+                let cursor_y = 10.0; // 10px padding from top
+
+                let mut started = false;
+                for &d in &digits {
+                    if d != 0 || started {
+                        started = true;
+                        let glyph = FONT[d as usize];
+
+                        // Iterate over the 5 rows and 3 columns of the glyph
+                        for (row_idx, &row) in glyph.iter().enumerate() {
+                            for col_idx in 0..3 {
+                                // Check if the bit is set (1 = draw pixel)
+                                if (row & (1 << (2 - col_idx))) != 0 {
+                                    let x = cursor_x + col_idx as f32 * pixel_size;
+                                    let y = cursor_y + row_idx as f32 * pixel_size;
+
+                                    // Scale the 1x1 quad to pixel_size, and translate to screen pos
+                                    let model = glam::Mat4::from_scale(glam::Vec3::new(pixel_size, pixel_size, 1.0))
+                                              * glam::Mat4::from_translation(glam::Vec3::new(x, y, 0.0));
+
+                                    frame.ui_commands.push(RenderCommand {
+                                        mesh_id: state.ui_mesh_id,
+                                        material_id: state.ui_material_id,
+                                        model_matrix: model,
+                                        _padding: [0; 2],
+                                    });
+                                }
+                            }
+                        }
+                        cursor_x += 4.0 * pixel_size; // Advance cursor (3px width + 1px spacing)
                     }
                 }
 

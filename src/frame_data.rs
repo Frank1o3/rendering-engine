@@ -14,6 +14,7 @@ pub struct RenderCommand {
 
 pub struct FrameData {
     pub commands: Vec<RenderCommand>,
+    pub ui_commands: Vec<RenderCommand>, // For 2D overlay
     // Camera Transform
     pub camera_position: Vec3,
     pub camera_rotation: Quat,
@@ -28,6 +29,7 @@ impl Default for FrameData {
     fn default() -> Self {
         Self {
             commands: Vec::with_capacity(1024), // Pre-allocated!
+            ui_commands: Vec::with_capacity(256), // Pre-allocate for UI
             camera_position: Vec3::ZERO,
             camera_rotation: Quat::IDENTITY,
             camera_fov: std::f32::consts::FRAC_PI_4,
@@ -42,6 +44,7 @@ impl Clone for FrameData {
     fn clone(&self) -> Self {
         Self {
             commands: self.commands.clone(),
+            ui_commands: self.ui_commands.clone(),
             camera_position: self.camera_position,
             camera_rotation: self.camera_rotation,
             camera_fov: self.camera_fov,

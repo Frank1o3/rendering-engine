@@ -37,6 +37,8 @@ pub struct Renderer {
     next_shader_id: u32,
     next_material_id: u32,
     transform_buffer: PersistentMappedBuffer,
+    width: i32,  // Window width for orthographic projection
+    height: i32, // Window height for orthographic projection
 }
 
 impl Renderer {
@@ -66,6 +68,8 @@ impl Renderer {
             next_mesh_id: 0,
             next_shader_id: 0,
             next_material_id: 0,
+            width: 800,  // Default window width
+            height: 600, // Default window height
         }
     }
 
@@ -148,7 +152,9 @@ impl Renderer {
         id
     }
 
-    pub fn resize(&self, width: i32, height: i32) {
+    pub fn resize(&mut self, width: i32, height: i32) {
+        self.width = width;
+        self.height = height;
         unsafe {
             self.gl.viewport(0, 0, width, height);
         }
@@ -167,7 +173,9 @@ impl Renderer {
                 .clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
         }
 
-        // 1. Compute VP once per frame
+        // ==========================================
+        // PASS 1: 3D SCENE (Perspective)
+        // ==========================================
         let view = math::camera_to_view_matrix(
             current_frame.camera_position,
             current_frame.camera_rotation,
@@ -180,28 +188,49 @@ impl Renderer {
         );
         let vp = proj * view;
 
-        // 2. Sort by (material, mesh) to batch draw calls
+        let mut transform_offset = 0;
+        transform_offset = self.render_commands(&current_frame.commands, &vp, transform_offset);
+
+        // ==========================================
+        // PASS 2: UI OVERLAY (Orthographic)
+        // ==========================================
+        if !current_frame.ui_commands.is_empty() {
+            // Build a manual orthographic projection matrix
+            // Maps [0, width] to [-1, 1] and [0, height] to [-1, 1] (Y inverted)
+            let w = self.width as f32;
+            let h = self.height as f32;
+            let ui_proj = glam::Mat4::from_translation(glam::Vec3::new(-1.0, 1.0, 0.0))
+                        * glam::Mat4::from_scale(glam::Vec3::new(2.0 / w, -2.0 / h, 1.0));
+
+            transform_offset = self.render_commands(&current_frame.ui_commands, &ui_proj, transform_offset);
+        }
+    }
+
+    /// Helper method to batch and draw a slice of commands.
+    /// Returns the new transform_offset so the next pass knows where to start writing.
+    fn render_commands(&mut self, commands: &[crate::frame_data::RenderCommand], vp: &glam::Mat4, mut transform_offset: usize) -> usize {
+        if commands.is_empty() {
+            return transform_offset;
+        }
+
         self.draw_indices.clear();
-        self.draw_indices.extend(0..current_frame.commands.len());
+        self.draw_indices.extend(0..commands.len());
         self.draw_indices.sort_by_key(|&i| {
-            let cmd = &current_frame.commands[i];
-            (cmd.material_id, cmd.mesh_id) // Group by BOTH!
+            let cmd = &commands[i];
+            (cmd.material_id, cmd.mesh_id)
         });
 
-        // 3. Group and Dispatch
         let mut i = 0;
-        let mut transform_offset = 0;
-
         while i < self.draw_indices.len() {
             let start_idx = self.draw_indices[i];
-            let mat_id = current_frame.commands[start_idx].material_id;
-            let mesh_id = current_frame.commands[start_idx].mesh_id;
+            let mat_id = commands[start_idx].material_id;
+            let mesh_id = commands[start_idx].mesh_id;
 
             // Find the end of this group
             let mut group_end = i + 1;
             while group_end < self.draw_indices.len() {
                 let idx = self.draw_indices[group_end];
-                let cmd = &current_frame.commands[idx];
+                let cmd = &commands[idx];
                 if cmd.material_id != mat_id || cmd.mesh_id != mesh_id {
                     break;
                 }
@@ -215,7 +244,7 @@ impl Renderer {
             unsafe {
                 // Bind state ONCE for this entire group
                 self.gl.use_program(Some(shader.program));
-                shader.set_vp(&vp);
+                shader.set_vp(vp);
                 self.gl.bind_vertex_array(Some(mesh.vao));
 
                 let instance_count = (group_end - i) as i32;
@@ -224,7 +253,7 @@ impl Renderer {
                 // Write transforms directly to persistent GPU memory
                 for j in i..group_end {
                     let cmd_idx = self.draw_indices[j];
-                    let cmd = &current_frame.commands[cmd_idx];
+                    let cmd = &commands[cmd_idx];
                     self.transform_buffer
                         .write_mat4(transform_offset, &cmd.model_matrix);
                     transform_offset += 1;
@@ -249,5 +278,7 @@ impl Renderer {
             self.gl.bind_vertex_array(None);
             self.gl.use_program(None);
         }
+
+        transform_offset
     }
 }
