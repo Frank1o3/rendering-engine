@@ -1,8 +1,6 @@
 {
     // === RUST ===
     "rust-analyzer.checkOnSave": true,
-    "rust-analyzer.checkOnSave.command": "clippy",
-    "rust-analyzer.cargo.allFeatures": true,
     // Format on save (Rust + others)
     "editor.formatOnSave": true,
     // === GLSL ===
@@ -34,5 +32,7 @@
     },
     // === AUTO SAVE (for shader workflow later) ===
     "files.autoSave": "afterDelay",
-    "files.autoSaveDelay": 500
+    "files.autoSaveDelay": 500,
+    "git.autofetch": "all",
+    "git.autofetchPeriod": 60
 }
