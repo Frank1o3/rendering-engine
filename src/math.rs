@@ -1,6 +1,46 @@
 // src/renderer/math.rs
 use glam::camera::rh::proj::opengl::perspective;
 use glam::{Mat4, Quat, Vec3};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
+/// A wrapper type around floats to allow hashing them via their raw bits.
+#[derive(Copy, Clone, Debug)]
+pub struct HashableF32(pub f32);
+
+impl PartialEq for HashableF32 {
+    fn eq(&self, other: &Self) -> bool {
+        // Fallback to bit representation to avoid NaN != NaN issues when hashing
+        self.0.to_bits() == other.0.to_bits()
+    }
+}
+
+impl Eq for HashableF32 {}
+
+impl Hash for HashableF32 {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.to_bits().hash(state);
+    }
+}
+
+/// Helper function to compute a u64 hash for a 3D float vector.
+pub fn hash_vec3(v: Vec3) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    v.x.to_bits().hash(&mut hasher);
+    v.y.to_bits().hash(&mut hasher);
+    v.z.to_bits().hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Helper function to compute a u64 hash for a quaternion.
+pub fn hash_quat(q: Quat) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    q.x.to_bits().hash(&mut hasher);
+    q.y.to_bits().hash(&mut hasher);
+    q.z.to_bits().hash(&mut hasher);
+    q.w.to_bits().hash(&mut hasher);
+    hasher.finish()
+}
 
 /// A lightweight helper for the Game Engine to build transforms.
 /// The Renderer knows nothing about this struct!

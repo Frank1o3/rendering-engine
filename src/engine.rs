@@ -1,8 +1,10 @@
 // src/renderer/engine.rs
 use crate::buffer::PersistentMappedBuffer;
-use crate::frame_data::FrameData;
+use crate::draw_indirect::{DrawElementsIndirectCommand, IndirectBuffer, MdiStrategy};
+use crate::frame_data::{FrameData, InstanceData};
 use crate::math;
 use crate::mesh::{Mesh, MeshData};
+use crate::scene::{ObjectHandle, ObjectKind, Scene, SortedInstance};
 use crate::shader::ShaderProgram;
 use crate::triple_buffer::ReadHandle;
 use bytemuck::{Pod, Zeroable};
@@ -32,13 +34,19 @@ pub struct Renderer {
     shaders: HashMap<ShaderId, ShaderProgram>,
     meshes: HashMap<MeshId, Mesh>,
     materials: HashMap<MaterialId, ShaderId>,
-    draw_indices: Vec<usize>, // Pre-allocated scratch buffer for sorting
+    sorted_instances: Vec<SortedInstance>, // Pre-allocated scratch buffer for sorting
+    indirect_cmds: Vec<DrawElementsIndirectCommand>, // Pre-allocated scratch buffer for indirect commands
     next_mesh_id: u32,
     next_shader_id: u32,
     next_material_id: u32,
     transform_buffer: PersistentMappedBuffer,
     width: i32,  // Window width for orthographic projection
     height: i32, // Window height for orthographic projection
+
+    // Scene Object registry
+    pub scene: Scene,
+    mdi_strategy: MdiStrategy,
+    indirect_buffer: IndirectBuffer,
 }
 
 impl Renderer {
@@ -51,11 +59,13 @@ impl Renderer {
             gl.clear_color(0.1, 0.1, 0.1, 1.0);
         }
 
-        // Allocate persistent buffer for transforms (65536 * 64 bytes = 4MB)
+        // Allocate persistent buffer for compact transform InstanceData (65536 * 32 bytes = 2MB)
         let transform_buffer = PersistentMappedBuffer::new(
             gl.clone(),
-            MAX_OBJECTS * std::mem::size_of::<glam::Mat4>(),
+            MAX_OBJECTS * std::mem::size_of::<InstanceData>(),
         );
+
+        let indirect_buffer = IndirectBuffer::new(gl.clone(), true);
 
         Self {
             gl: gl.clone(),
@@ -63,14 +73,60 @@ impl Renderer {
             shaders: HashMap::new(),
             meshes: HashMap::new(),
             materials: HashMap::new(),
-            draw_indices: Vec::with_capacity(MAX_OBJECTS),
+            sorted_instances: Vec::with_capacity(MAX_OBJECTS),
+            indirect_cmds: Vec::with_capacity(1024),
             transform_buffer,
             next_mesh_id: 0,
             next_shader_id: 0,
             next_material_id: 0,
             width: 800,  // Default window width
             height: 600, // Default window height
+            scene: Scene::new(),
+            mdi_strategy: MdiStrategy::Multi,
+            indirect_buffer,
         }
+    }
+
+    // --- Scene Object Registry delegation API ---
+
+    pub fn add_object(
+        &mut self,
+        mesh_id: MeshId,
+        material_id: MaterialId,
+        kind: ObjectKind,
+    ) -> ObjectHandle {
+        self.scene.add_object(mesh_id, material_id, kind)
+    }
+
+    pub fn remove_object(&mut self, handle: ObjectHandle) {
+        self.scene.remove_object(handle);
+    }
+
+    pub fn set_transform(
+        &mut self,
+        handle: ObjectHandle,
+        position: glam::Vec3,
+        rotation: glam::Quat,
+        scale: f32,
+    ) {
+        self.scene.set_transform(handle, position, rotation, scale);
+    }
+
+    pub fn set_position(&mut self, handle: ObjectHandle, position: glam::Vec3) {
+        self.scene.set_position(handle, position);
+    }
+
+    pub fn set_position_rotation(
+        &mut self,
+        handle: ObjectHandle,
+        position: glam::Vec3,
+        rotation: glam::Quat,
+    ) {
+        self.scene.set_position_rotation(handle, position, rotation);
+    }
+
+    pub fn set_mdi_strategy(&mut self, strategy: MdiStrategy) {
+        self.mdi_strategy = strategy;
     }
 
     pub fn load_mesh(&mut self, data: MeshData) -> MeshId {
@@ -161,7 +217,8 @@ impl Renderer {
     }
 
     /// The main render loop. No arguments needed!
-    /// It pulls data directly from the lock-free buffer.
+    /// It pulls camera and dynamic data directly from the lock-free buffer,
+    /// combines them with static/dynamic scene registry states, and dispatches MDI.
     pub fn render(&mut self) {
         let mut current_frame = FrameData::default();
         if !self.read_handle.consume(&mut current_frame) {
@@ -188,8 +245,31 @@ impl Renderer {
         );
         let vp = proj * view;
 
+        // 1. Recompute cached transforms for dirty objects in Scene
+        self.scene.flush_dirty();
+
+        // 2. Collect sorted instances from the Scene registry
+        self.scene.collect_sorted_into(&mut self.sorted_instances);
+
+        // 3. Append dynamic 3D commands from FrameData
+        let dynamic_commands_exist = !current_frame.commands.is_empty();
+        for cmd in &current_frame.commands {
+            self.sorted_instances.push(SortedInstance {
+                material_id: cmd.material_id,
+                mesh_id: cmd.mesh_id,
+                instance: cmd.to_instance_data(),
+            });
+        }
+
+        // 4. Sort the combined list if dynamic commands were added
+        if dynamic_commands_exist {
+            self.sorted_instances
+                .sort_unstable_by_key(|o| (o.material_id, o.mesh_id));
+        }
+
+        // 5. Render standard 3D instances
         let mut transform_offset = 0;
-        transform_offset = self.render_commands(&current_frame.commands, &vp, transform_offset);
+        transform_offset = self.render_instances(&vp, transform_offset);
 
         // ==========================================
         // PASS 2: UI OVERLAY (Orthographic)
@@ -202,78 +282,102 @@ impl Renderer {
             let ui_proj = glam::Mat4::from_translation(glam::Vec3::new(-1.0, 1.0, 0.0))
                 * glam::Mat4::from_scale(glam::Vec3::new(2.0 / w, -2.0 / h, 1.0));
 
-            self.render_commands(&current_frame.ui_commands, &ui_proj, transform_offset);
+            // Load UI elements into sorted list
+            self.sorted_instances.clear();
+            for cmd in &current_frame.ui_commands {
+                self.sorted_instances.push(SortedInstance {
+                    material_id: cmd.material_id,
+                    mesh_id: cmd.mesh_id,
+                    instance: cmd.to_instance_data(),
+                });
+            }
+            self.sorted_instances
+                .sort_unstable_by_key(|o| (o.material_id, o.mesh_id));
+
+            // Render UI overlay using dedicated orthographic pass
+            self.render_instances(&ui_proj, transform_offset);
         }
     }
 
-    /// Helper method to batch and draw a slice of commands.
+    /// Helper method to batch and draw a slice of sorted instances.
     /// Returns the new transform_offset so the next pass knows where to start writing.
-    fn render_commands(
-        &mut self,
-        commands: &[crate::frame_data::RenderCommand],
-        vp: &glam::Mat4,
-        mut transform_offset: usize,
-    ) -> usize {
-        if commands.is_empty() {
+    fn render_instances(&mut self, vp: &glam::Mat4, mut transform_offset: usize) -> usize {
+        if self.sorted_instances.is_empty() {
             return transform_offset;
         }
 
-        self.draw_indices.clear();
-        self.draw_indices.extend(0..commands.len());
-        self.draw_indices.sort_by_key(|&i| {
-            let cmd = &commands[i];
-            (cmd.material_id, cmd.mesh_id)
-        });
+        let start_offset = transform_offset;
+        let total_instances = self.sorted_instances.len();
 
+        // 1. Write instance attributes to persistent GPU memory contiguously
+        for i in 0..total_instances {
+            if transform_offset >= MAX_OBJECTS {
+                log::warn!(
+                    "Maximum transform instance capacity exceeded ({})",
+                    MAX_OBJECTS
+                );
+                break;
+            }
+            let inst = &self.sorted_instances[i];
+            self.transform_buffer
+                .write_instance(transform_offset, &inst.instance);
+            transform_offset += 1;
+        }
+
+        // 2. Iterate and group by (material_id, mesh_id)
+        let actual_instances = transform_offset - start_offset;
         let mut i = 0;
-        while i < self.draw_indices.len() {
-            let start_idx = self.draw_indices[i];
-            let mat_id = commands[start_idx].material_id;
-            let mesh_id = commands[start_idx].mesh_id;
+        while i < actual_instances {
+            let start_inst = &self.sorted_instances[i];
+            let mat_id = start_inst.material_id;
+            let mesh_id = start_inst.mesh_id;
 
-            // Find the end of this group
+            // Find the end of this contiguous (material, mesh) group
             let mut group_end = i + 1;
-            while group_end < self.draw_indices.len() {
-                let idx = self.draw_indices[group_end];
-                let cmd = &commands[idx];
-                if cmd.material_id != mat_id || cmd.mesh_id != mesh_id {
+            while group_end < actual_instances {
+                let inst = &self.sorted_instances[group_end];
+                if inst.material_id != mat_id || inst.mesh_id != mesh_id {
                     break;
                 }
                 group_end += 1;
             }
 
+            let group_size = group_end - i;
             let mesh = self.meshes.get(&mesh_id).unwrap();
             let shader_id = self.materials.get(&mat_id).unwrap();
             let shader = self.shaders.get(shader_id).unwrap();
 
+            // Build the indirect command for this group
+            let base_instance = (start_offset + i) as u32;
+            let cmd = DrawElementsIndirectCommand {
+                count: mesh.index_count as u32,
+                instance_count: group_size as u32,
+                first_index: 0,
+                base_vertex: 0,
+                base_instance,
+            };
+
+            // Upload command to DRAW_INDIRECT_BUFFER
+            self.indirect_cmds.clear();
+            self.indirect_cmds.push(cmd);
+            self.indirect_buffer.upload(&self.indirect_cmds);
+
+            // If MultiCount strategy, upload count
+            if self.mdi_strategy == MdiStrategy::MultiCount {
+                self.indirect_buffer.upload_count(1);
+            }
+
             unsafe {
-                // Bind state ONCE for this entire group
+                // Bind shader program and set VP matrix
                 self.gl.use_program(Some(shader.program));
                 shader.set_vp(vp);
+
+                // Bind VAO
                 self.gl.bind_vertex_array(Some(mesh.vao));
 
-                let instance_count = (group_end - i) as i32;
-                let base_instance = transform_offset as u32;
-
-                // Write transforms directly to persistent GPU memory
-                for j in i..group_end {
-                    let cmd_idx = self.draw_indices[j];
-                    let cmd = &commands[cmd_idx];
-                    self.transform_buffer
-                        .write_mat4(transform_offset, &cmd.model_matrix);
-                    transform_offset += 1;
-                }
-
-                // THE MAGIC CALL: Draw all instances in this group in exactly 1 CPU command!
-                self.gl.draw_elements_instanced_base_vertex_base_instance(
-                    glow::TRIANGLES,
-                    mesh.index_count,   // count: i32
-                    glow::UNSIGNED_INT, // element_type: u32
-                    0, // offset: i32 (0 bytes into the EBO, since we bind the VAO per group)
-                    instance_count, // instance_count: i32 (The number of objects in this batch)
-                    0, // base_vertex: i32 (0, because we aren't merging meshes into one giant VBO)
-                    base_instance, // base_instance: u32 (Offsets the instanced Mat4 attributes in our persistent buffer!)
-                );
+                // Dispatch indirect drawing using chosen MDI strategy
+                self.indirect_buffer
+                    .dispatch(self.mdi_strategy, glow::UNSIGNED_INT, 0, 1, 1);
             }
 
             i = group_end;

@@ -25,8 +25,8 @@ use glam::{Quat, Vec3};
 use rendering_engine::{
     engine::{MaterialId, MeshId, Renderer},
     frame_data::{FrameData, RenderCommand},
-    math::{Transform, transform_to_model_matrix},
     mesh::{MeshData, Vertex},
+    scene::ObjectKind,
     triple_buffer::{WriteHandle, new_triple_buffer},
 };
 
@@ -61,9 +61,6 @@ struct DemoState {
     gl_surface: Surface<WindowSurface>,
     renderer: Renderer,
     write_handle: WriteHandle<FrameData>,
-
-    mesh_id: MeshId,
-    material_id: MaterialId,
 
     // UI State
     ui_mesh_id: MeshId,
@@ -298,9 +295,19 @@ impl ApplicationHandler for DemoApp {
             .load_shaders_from_dir(std::path::Path::new("shaders"))
             .expect("Failed to load shaders");
         let shader_id = *shader_map.get("basic").expect("Missing 'basic' shader");
+        let ui_shader_id = *shader_map.get("ui").expect("Missing 'ui' shader");
         let material_id = renderer.create_material(shader_id);
-        // Reuse the same shader for the UI, it just outputs the vertex color!
-        let ui_material_id = renderer.create_material(shader_id);
+        let ui_material_id = renderer.create_material(ui_shader_id);
+
+        // Pre-register static cubes at startup: 10,201 cubes (101x101)
+        let grid_size = 5;
+        for x in -grid_size..=grid_size {
+            for z in -grid_size..=grid_size {
+                let position = Vec3::new(x as f32 * 2.5, 0.0, z as f32 * 2.5);
+                let handle = renderer.add_object(mesh_id, material_id, ObjectKind::Static);
+                renderer.set_transform(handle, position, Quat::IDENTITY, 1.0);
+            }
+        }
 
         self.state = Some(DemoState {
             window,
@@ -308,8 +315,6 @@ impl ApplicationHandler for DemoApp {
             gl_surface,
             renderer,
             write_handle,
-            mesh_id,
-            material_id,
             ui_mesh_id,
             ui_material_id,
             current_fps: 0.0,
@@ -467,24 +472,8 @@ impl ApplicationHandler for DemoApp {
                 frame.commands.clear(); // Keep capacity, zero allocation!
                 frame.ui_commands.clear(); // Clear UI commands
 
-                // Spawn an 11x11 grid of cubes (121 objects)
-                for x in -50..=50 {
-                    for z in -50..=50 {
-                        let transform = Transform {
-                            position: Vec3::new(x as f32 * 2.5, 0.0, z as f32 * 2.5),
-                            rotation: Quat::IDENTITY,
-                            scale: Vec3::ONE,
-                        };
-                        let model_matrix = transform_to_model_matrix(&transform);
-
-                        frame.commands.push(RenderCommand {
-                            mesh_id: state.mesh_id,
-                            material_id: state.material_id,
-                            model_matrix,
-                            _padding: [0; 2],
-                        });
-                    }
-                }
+                // Note: The 10,201 static cubes are registered once at startup in resumed().
+                // Zero per-frame allocation, matrix building, or data mapping is done here!
 
                 // ==========================================
                 // BUILD UI (Zero-Allocation Bitmap Font)
@@ -492,7 +481,8 @@ impl ApplicationHandler for DemoApp {
                 let fps = state.current_fps as u32;
                 let digits = [(fps / 100) % 10, (fps / 10) % 10, fps % 10];
 
-                let pixel_size = 4.0; // Each "pixel" of the font is 4x4 screen pixels
+                let pixel_size = 6.0; // Spacing/grid step size for the font pixels
+                let square_size = 6.0; // Visual size of each individual square forming the numbers
                 let mut cursor_x = 10.0; // 10px padding from left
                 let cursor_y = 10.0; // 10px padding from top
 
@@ -510,18 +500,12 @@ impl ApplicationHandler for DemoApp {
                                     let x = cursor_x + col_idx as f32 * pixel_size;
                                     let y = cursor_y + row_idx as f32 * pixel_size;
 
-                                    // Scale the 1x1 quad to pixel_size, and translate to screen pos
-                                    let model = glam::Mat4::from_scale(glam::Vec3::new(
-                                        pixel_size, pixel_size, 1.0,
-                                    )) * glam::Mat4::from_translation(glam::Vec3::new(
-                                        x, y, 0.0,
-                                    ));
-
                                     frame.ui_commands.push(RenderCommand {
                                         mesh_id: state.ui_mesh_id,
                                         material_id: state.ui_material_id,
-                                        model_matrix: model,
-                                        _padding: [0; 2],
+                                        position: glam::Vec3::new(x, y, 0.0),
+                                        rotation: glam::Quat::IDENTITY,
+                                        scale: square_size,
                                     });
                                 }
                             }

@@ -53,6 +53,7 @@ pub fn new_triple_buffer<T: Default + Clone>() -> (WriteHandle<T>, ReadHandle<T>
 
 impl<T: Default + Clone> WriteHandle<T> {
     /// Get a mutable reference to the back slot to write your FrameData.
+    #[allow(clippy::mut_from_ref)]
     pub fn write_slot(&self) -> &mut T {
         let idx = self.state.back.load(Ordering::Relaxed);
         // SAFETY: UnsafeCell::get() returns a *mut T directly, bypassing the creation

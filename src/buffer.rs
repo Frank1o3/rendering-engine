@@ -1,3 +1,4 @@
+use crate::frame_data::InstanceData;
 use glow::HasContext;
 use std::sync::Arc;
 
@@ -38,12 +39,12 @@ impl PersistentMappedBuffer {
         }
     }
 
-    /// Writes a Mat4 directly to the mapped memory at the given index.
+    /// Writes an InstanceData directly to the mapped memory at the given index.
     /// Zero allocation, zero driver validation.
-    pub fn write_mat4(&self, index: usize, mat: &glam::Mat4) {
+    pub fn write_instance(&self, index: usize, instance: &InstanceData) {
         unsafe {
-            let dst = (self.ptr as *mut glam::Mat4).add(index);
-            *dst = *mat;
+            let dst = (self.ptr as *mut InstanceData).add(index);
+            *dst = *instance;
         }
     }
 }
@@ -68,7 +69,7 @@ impl GpuBuffer {
         unsafe {
             let handle = gl.create_buffer().expect("Failed to create buffer");
             Self {
-                gl: gl,
+                gl,
                 handle,
                 target,
             }

@@ -49,24 +49,25 @@ impl Mesh {
             gl.vertex_attrib_pointer_f32(1, 4, glow::UNSIGNED_BYTE, true, stride, 12);
 
             // ==========================================
-            // NEW: Instanced Model Matrix (Locations 2, 3, 4, 5)
+            // NEW: Instanced Transform Attributes (Locations 2, 3, 4)
             // ==========================================
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(transform_buffer));
-            let mat_stride = 64; // 16 bytes * 4 columns
-            for i in 0..4 {
-                let loc = 2 + i;
-                gl.enable_vertex_attrib_array(loc);
-                gl.vertex_attrib_pointer_f32(
-                    loc,
-                    4,
-                    glow::FLOAT,
-                    false,
-                    mat_stride,
-                    (i * 16) as i32,
-                );
-                // Divisor = 1 means this attribute updates once per INSTANCE, not per vertex
-                gl.vertex_attrib_divisor(loc, 1);
-            }
+            let inst_stride = 32; // 32 bytes for InstanceData: 12 (pos) + 4 (scale) + 16 (rot)
+
+            // Location 2: Position (vec3)
+            gl.enable_vertex_attrib_array(2);
+            gl.vertex_attrib_pointer_f32(2, 3, glow::FLOAT, false, inst_stride, 0);
+            gl.vertex_attrib_divisor(2, 1);
+
+            // Location 3: Scale (float)
+            gl.enable_vertex_attrib_array(3);
+            gl.vertex_attrib_pointer_f32(3, 1, glow::FLOAT, false, inst_stride, 12);
+            gl.vertex_attrib_divisor(3, 1);
+
+            // Location 4: Rotation (vec4 - quaternion xyzw)
+            gl.enable_vertex_attrib_array(4);
+            gl.vertex_attrib_pointer_f32(4, 4, glow::FLOAT, false, inst_stride, 16);
+            gl.vertex_attrib_divisor(4, 1);
 
             gl.bind_vertex_array(None);
 
