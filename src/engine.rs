@@ -200,15 +200,20 @@ impl Renderer {
             let w = self.width as f32;
             let h = self.height as f32;
             let ui_proj = glam::Mat4::from_translation(glam::Vec3::new(-1.0, 1.0, 0.0))
-                        * glam::Mat4::from_scale(glam::Vec3::new(2.0 / w, -2.0 / h, 1.0));
+                * glam::Mat4::from_scale(glam::Vec3::new(2.0 / w, -2.0 / h, 1.0));
 
-            transform_offset = self.render_commands(&current_frame.ui_commands, &ui_proj, transform_offset);
+            self.render_commands(&current_frame.ui_commands, &ui_proj, transform_offset);
         }
     }
 
     /// Helper method to batch and draw a slice of commands.
     /// Returns the new transform_offset so the next pass knows where to start writing.
-    fn render_commands(&mut self, commands: &[crate::frame_data::RenderCommand], vp: &glam::Mat4, mut transform_offset: usize) -> usize {
+    fn render_commands(
+        &mut self,
+        commands: &[crate::frame_data::RenderCommand],
+        vp: &glam::Mat4,
+        mut transform_offset: usize,
+    ) -> usize {
         if commands.is_empty() {
             return transform_offset;
         }
