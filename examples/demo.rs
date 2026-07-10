@@ -26,7 +26,7 @@ use rendering_engine::{
     engine::{MaterialId, MeshId, Renderer},
     frame_data::{FrameData, RenderCommand},
     mesh::{MeshData, Vertex},
-    pipeline::PipelineState ,
+    pipeline::PipelineState,
     scene::ObjectKind,
     triple_buffer::{WriteHandle, new_triple_buffer},
 };
