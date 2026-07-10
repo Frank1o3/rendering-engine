@@ -7,6 +7,12 @@ use std::hash::{Hash, Hasher};
 #[repr(transparent)]
 pub struct PipelineStateId(pub u64);
 
+impl From<u64> for PipelineStateId {
+    fn from(value: u64) -> Self {
+        PipelineStateId(value)
+    }
+}
+
 /// Describes the complete OpenGL pipeline state for rendering
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PipelineState {
@@ -21,7 +27,7 @@ pub struct PipelineState {
 }
 
 /// Face culling mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CullMode {
     None,
     Front,
@@ -29,7 +35,7 @@ pub enum CullMode {
 }
 
 /// Depth comparison function
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DepthFunc {
     Never,
     Less,
@@ -57,7 +63,7 @@ impl DepthFunc {
 }
 
 /// Blend factor for alpha blending
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BlendFactor {
     Zero,
     One,
@@ -161,7 +167,7 @@ impl PipelineCache {
             }
         }
 
-        let id = PipelineStateId((self.next_id << 32) | (hash & 0xFFFFFFFF));
+        let id = PipelineStateId((self.next_id as u64) << 32 | (hash & 0xFFFFFFFF));
         self.next_id += 1;
         self.states.insert(hash, state);
         id
