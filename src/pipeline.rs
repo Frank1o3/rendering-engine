@@ -1,5 +1,4 @@
 // src/renderer/pipeline.rs
-use glow::HasContext;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
@@ -152,7 +151,7 @@ impl PipelineCache {
     /// If an identical state already exists, returns the existing ID
     pub fn register(&mut self, state: PipelineState) -> PipelineStateId {
         let hash = state.hash();
-        
+
         // Check if we already have this exact state
         if let Some(existing) = self.states.get(&hash) {
             if *existing == state {

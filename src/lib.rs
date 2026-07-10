@@ -7,6 +7,7 @@ pub mod engine;
 pub mod frame_data;
 pub mod math;
 pub mod mesh;
+pub mod pipeline;
 pub mod scene;
 pub mod shader;
 pub mod triple_buffer;
