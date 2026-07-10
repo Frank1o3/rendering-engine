@@ -26,7 +26,7 @@ use rendering_engine::{
     engine::{MaterialId, MeshId, Renderer},
     frame_data::{FrameData, RenderCommand},
     mesh::{MeshData, Vertex},
-    pipeline::{PipelineState, CullMode, DepthFunc, BlendFactor},
+    pipeline::PipelineState ,
     scene::ObjectKind,
     triple_buffer::{WriteHandle, new_triple_buffer},
 };
@@ -303,11 +303,11 @@ impl ApplicationHandler for DemoApp {
             .expect("Failed to load shaders");
         let shader_id = *shader_map.get("basic").expect("Missing 'basic' shader");
         let ui_shader_id = *shader_map.get("ui").expect("Missing 'ui' shader");
-        
+
         // Create materials with pipeline states
         let opaque_pipeline = PipelineState::default_opaque(shader_id.0);
         let material_id = renderer.create_material(shader_id, opaque_pipeline);
-        
+
         let alpha_pipeline = PipelineState::default_alpha(ui_shader_id.0);
         let ui_material_id = renderer.create_material(ui_shader_id, alpha_pipeline);
 

@@ -55,7 +55,7 @@ pub struct Renderer {
     pub scene: Scene,
     mdi_strategy: MdiStrategy,
     indirect_buffer: IndirectBuffer,
-    
+
     // Phase 3: Pipeline State Caching
     pipeline_cache: PipelineCache,
     current_pipeline_id: Option<PipelineStateId>,
@@ -210,11 +210,21 @@ impl Renderer {
         Ok(loaded_shaders)
     }
 
-    pub fn create_material(&mut self, shader_id: ShaderId, pipeline_state: PipelineState) -> MaterialId {
+    pub fn create_material(
+        &mut self,
+        shader_id: ShaderId,
+        pipeline_state: PipelineState,
+    ) -> MaterialId {
         let id = MaterialId(self.next_material_id);
         self.next_material_id += 1;
         let pipeline_id = self.pipeline_cache.register(pipeline_state);
-        self.materials.insert(id, MaterialEntry { shader_id, pipeline_id });
+        self.materials.insert(
+            id,
+            MaterialEntry {
+                shader_id,
+                pipeline_id,
+            },
+        );
         id
     }
 
@@ -356,13 +366,23 @@ impl Renderer {
             }
 
             let group_size = group_end - i;
-            let mesh = self.meshes.get(&mesh_id).unwrap();
-            let material_entry = self.materials.get(&mat_id).unwrap();
-            let shader = self.shaders.get(&material_entry.shader_id).unwrap();
-            let pipeline_state = self.pipeline_cache.get_by_id(material_entry.pipeline_id).unwrap();
 
-            // Apply pipeline state (with caching to avoid redundant GL calls)
-            self.apply_pipeline(pipeline_state);
+            // 1. Extract Copy data to release all borrows on `self` immediately
+            let material_entry = *self.materials.get(&mat_id).expect("Material ID not found");
+            let pipeline_state = *self
+                .pipeline_cache
+                .get_by_id(material_entry.pipeline_id)
+                .expect("Pipeline state ID not found in cache");
+
+            // 2. Apply pipeline state (borrows `self` mutably, but no outstanding borrows exist now)
+            self.apply_pipeline(&pipeline_state);
+
+            // 3. Now it is safe to borrow `self.meshes` and `self.shaders` again
+            let mesh = self.meshes.get(&mesh_id).expect("Mesh ID not found");
+            let shader = self
+                .shaders
+                .get(&material_entry.shader_id)
+                .expect("Shader ID not found");
 
             // Build the indirect command for this group
             let base_instance = (start_offset + i) as u32;
@@ -387,10 +407,8 @@ impl Renderer {
             unsafe {
                 // Set VP matrix uniform
                 shader.set_vp(vp);
-
                 // Bind VAO
                 self.gl.bind_vertex_array(Some(mesh.vao));
-
                 // Dispatch indirect drawing using chosen MDI strategy
                 self.indirect_buffer
                     .dispatch(self.mdi_strategy, glow::UNSIGNED_INT, 0, 1, 1);
@@ -415,9 +433,15 @@ impl Renderer {
             }
         }
 
+        // FIX: Look up the actual ShaderProgram to get its real OpenGL handle!
+        let shader = self
+            .shaders
+            .get(&ShaderId(pipeline.shader_id))
+            .expect("Shader not found in apply_pipeline");
+
         unsafe {
-            // Bind shader program
-            self.gl.use_program(Some(pipeline.shader_id));
+            // Bind the ACTUAL OpenGL program handle
+            self.gl.use_program(Some(shader.program));
 
             // Set face culling
             match pipeline.cull_mode {
@@ -446,7 +470,8 @@ impl Renderer {
             // Set blending
             if pipeline.blend_enabled {
                 self.gl.enable(glow::BLEND);
-                self.gl.blend_func(pipeline.src_factor.to_glow(), pipeline.dst_factor.to_glow());
+                self.gl
+                    .blend_func(pipeline.src_factor.to_glow(), pipeline.dst_factor.to_glow());
             } else {
                 self.gl.disable(glow::BLEND);
             }

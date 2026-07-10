@@ -99,11 +99,11 @@ impl PipelineState {
     pub fn default_opaque(shader_id: u32) -> Self {
         Self {
             shader_id,
-            cull_mode: CullMode::Back,
+            cull_mode: CullMode::Back, // Cull the BACK faces, not the front!
             depth_test: true,
             depth_write: true,
             depth_func: DepthFunc::Less,
-            blend_enabled: false,
+            blend_enabled: false, // Opaque objects should NOT have blending enabled
             src_factor: BlendFactor::One,
             dst_factor: BlendFactor::Zero,
         }
@@ -139,38 +139,26 @@ impl PipelineState {
     }
 }
 
-/// Cache that maps pipeline state hashes to their IDs
+/// Cache that maps pipeline state hashes to their IDs.
+/// The PipelineStateId is simply the hash of the state, ensuring O(1) lookups
+/// and automatically deduplicating identical states.
 pub struct PipelineCache {
     states: HashMap<u64, PipelineState>,
-    next_id: u32,
 }
 
 impl PipelineCache {
     pub fn new() -> Self {
         Self {
             states: HashMap::new(),
-            next_id: 0,
         }
     }
 
-    /// Registers a pipeline state and returns its ID
-    /// If an identical state already exists, returns the existing ID
+    /// Registers a pipeline state and returns its ID.
+    /// If an identical state already exists, returns the existing ID.
     pub fn register(&mut self, state: PipelineState) -> PipelineStateId {
         let hash = state.hash();
-
-        // Check if we already have this exact state
-        if let Some(existing) = self.states.get(&hash) {
-            if *existing == state {
-                // Find the ID for this hash - we need to search since we don't store reverse mapping
-                // For simplicity, we'll just return a new ID (duplicates are rare in practice)
-                // A more sophisticated implementation would maintain a reverse map
-            }
-        }
-
-        let id = PipelineStateId((self.next_id as u64) << 32 | (hash & 0xFFFFFFFF));
-        self.next_id += 1;
-        self.states.insert(hash, state);
-        id
+        self.states.entry(hash).or_insert(state);
+        PipelineStateId(hash) // The ID is just the full hash!
     }
 
     /// Retrieves a pipeline state by its hash
@@ -180,8 +168,7 @@ impl PipelineCache {
 
     /// Retrieves a pipeline state by its ID
     pub fn get_by_id(&self, id: PipelineStateId) -> Option<&PipelineState> {
-        let hash = id.0 & 0xFFFFFFFF;
-        self.states.get(&hash)
+        self.states.get(&id.0) // Correctly looks up the full u64 hash
     }
 }
 
