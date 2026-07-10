@@ -281,7 +281,7 @@ impl ApplicationHandler for DemoApp {
 
         info!("OpenGL context successfully initialized!");
 
-        let grid_size = 25;
+        let grid_size = 50;
         let offset: f32 = 1.1;
 
         // Create Triple Buffer & Renderer
@@ -305,7 +305,6 @@ impl ApplicationHandler for DemoApp {
         let material_id = renderer.create_material(shader_id);
         let ui_material_id = renderer.create_material(ui_shader_id);
 
-        // Pre-register static cubes at startup: 10,201 cubes (101x101)
         for x in -grid_size..=grid_size {
             for z in -grid_size..=grid_size {
                 let position = Vec3::new(x as f32 * offset, 0.0, z as f32 * offset);
@@ -397,6 +396,16 @@ impl ApplicationHandler for DemoApp {
                 }
             }
             WindowEvent::RedrawRequested => {
+                // FPS Tracking
+                state.frame_count += 1;
+                let now = Instant::now();
+                let elapsed = (now - state.last_fps_update).as_secs_f32();
+                if elapsed >= 1.0 {
+                    state.current_fps = state.frame_count as f32 / elapsed;
+                    state.frame_count = 0;
+                    state.last_fps_update = now;
+                }
+
                 if self.pending_grab {
                     self.pending_grab = false;
 
@@ -421,15 +430,6 @@ impl ApplicationHandler for DemoApp {
                             }
                         }
                     }
-                }
-                // FPS Tracking
-                state.frame_count += 1;
-                let now = Instant::now();
-                let elapsed = (now - state.last_fps_update).as_secs_f32();
-                if elapsed >= 1.0 {
-                    state.current_fps = state.frame_count as f32 / elapsed;
-                    state.frame_count = 0;
-                    state.last_fps_update = now;
                 }
 
                 // 1. Delta Time
@@ -522,10 +522,10 @@ impl ApplicationHandler for DemoApp {
                 // Set Camera Data
                 frame.camera_position = state.camera_pos;
                 frame.camera_rotation = camera_rotation;
-                frame.camera_fov = std::f32::consts::FRAC_PI_4;
+                frame.camera_fov = std::f32::consts::FRAC_PI_3;
                 frame.camera_aspect_ratio = state.width as f32 / state.height as f32;
                 frame.camera_near = 0.1;
-                frame.camera_far = 100.0;
+                frame.camera_far = 255.5;
 
                 state.write_handle.publish();
 
@@ -547,8 +547,8 @@ impl ApplicationHandler for DemoApp {
             if let DeviceEvent::MouseMotion { delta } = event {
                 if state.cursor_grabbed {
                     // Note: If the mouse feels inverted, change -= to +=
-                    state.camera_yaw -= delta.0 as f32 * 0.002;
-                    state.camera_pitch -= delta.1 as f32 * 0.002;
+                    state.camera_yaw -= delta.0 as f32 * 0.001;
+                    state.camera_pitch -= delta.1 as f32 * 0.001;
                     state.camera_pitch = state.camera_pitch.clamp(-1.5, 1.5); // Prevent flipping
                 }
             }
