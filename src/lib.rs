@@ -5,6 +5,7 @@ pub mod buffer;
 pub mod draw_indirect;
 pub mod engine;
 pub mod frame_data;
+pub mod geometry_pool;
 pub mod math;
 pub mod mesh;
 pub mod pipeline;
@@ -18,6 +19,8 @@ pub use draw_indirect::{DrawElementsIndirectCommand, MdiStrategy};
 pub use engine::Renderer;
 pub use frame_data::{FrameData, InstanceData, RenderCommand};
 pub use mesh::{Mesh, MeshData, Vertex};
-pub use pipeline::{PipelineCache, PipelineState, PipelineStateId, CullMode, DepthFunc, BlendFactor};
+pub use pipeline::{
+    BlendFactor, CullMode, DepthFunc, PipelineCache, PipelineState, PipelineStateId,
+};
 pub use scene::{ObjectHandle, ObjectKind, Scene};
 pub use triple_buffer::{ReadHandle, WriteHandle, new_triple_buffer};

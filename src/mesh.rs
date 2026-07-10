@@ -1,8 +1,4 @@
-use std::sync::Arc;
-
-use crate::buffer::GpuBuffer;
 use bytemuck::{Pod, Zeroable};
-use glow::HasContext;
 
 // The optimized 16-byte vertex struct
 #[repr(C)]
@@ -17,75 +13,49 @@ pub struct MeshData {
     pub indices: Vec<u32>,
 }
 
-pub struct Mesh {
-    gl: Arc<glow::Context>,
-    pub vao: glow::VertexArray,
-    #[allow(unused)]
-    pub vbo: GpuBuffer,
-    #[allow(unused)]
-    pub ebo: GpuBuffer,
-    pub index_count: i32,
-}
+impl MeshData {
+    /// Forces every triangle to satisfy the engine's fixed convention:
+    /// CCW winding when viewed from outside the mesh, i.e. the winding-derived
+    /// normal (b-a) x (c-a) must point AWAY from the mesh centroid.
+    ///
+    /// Run this once at load time for anything procedurally generated or
+    /// imported (cubes, quads, OBJ files) so `CullMode::Back` never silently
+    /// eats faces that happened to be wound the wrong way.
+    pub fn fix_winding(&mut self) {
+        let centroid: glam::Vec3 = self
+            .vertices
+            .iter()
+            .map(|v| glam::Vec3::from(v.position))
+            .sum::<glam::Vec3>()
+            / self.vertices.len() as f32;
 
-impl Mesh {
-    pub fn new(gl: Arc<glow::Context>, data: &MeshData, transform_buffer: glow::Buffer) -> Self {
-        unsafe {
-            let vao = gl.create_vertex_array().expect("Failed to create VAO");
-            let vbo = GpuBuffer::new(gl.clone(), glow::ARRAY_BUFFER);
-            let ebo = GpuBuffer::new(gl.clone(), glow::ELEMENT_ARRAY_BUFFER);
+        let mut flipped = 0;
+        for tri in self.indices.chunks_exact_mut(3) {
+            let a = glam::Vec3::from(self.vertices[tri[0] as usize].position);
+            let b = glam::Vec3::from(self.vertices[tri[1] as usize].position);
+            let c = glam::Vec3::from(self.vertices[tri[2] as usize].position);
 
-            gl.bind_vertex_array(Some(vao));
-            vbo.upload_data(&data.vertices, glow::STATIC_DRAW);
-            ebo.upload_data(&data.indices, glow::STATIC_DRAW);
+            let face_normal = (b - a).cross(c - a);
+            let to_face = a - centroid;
 
-            let stride = std::mem::size_of::<Vertex>() as i32;
-
-            // Attribute 0: Position
-            gl.enable_vertex_attrib_array(0);
-            gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, stride, 0);
-
-            // Attribute 1: Color
-            gl.enable_vertex_attrib_array(1);
-            gl.vertex_attrib_pointer_f32(1, 4, glow::UNSIGNED_BYTE, true, stride, 12);
-
-            // ==========================================
-            // NEW: Instanced Transform Attributes (Locations 2, 3, 4)
-            // ==========================================
-            gl.bind_buffer(glow::ARRAY_BUFFER, Some(transform_buffer));
-            let inst_stride = 32; // 32 bytes for InstanceData: 12 (pos) + 4 (scale) + 16 (rot)
-
-            // Location 2: Position (vec3)
-            gl.enable_vertex_attrib_array(2);
-            gl.vertex_attrib_pointer_f32(2, 3, glow::FLOAT, false, inst_stride, 0);
-            gl.vertex_attrib_divisor(2, 1);
-
-            // Location 3: Scale (float)
-            gl.enable_vertex_attrib_array(3);
-            gl.vertex_attrib_pointer_f32(3, 1, glow::FLOAT, false, inst_stride, 12);
-            gl.vertex_attrib_divisor(3, 1);
-
-            // Location 4: Rotation (vec4 - quaternion xyzw)
-            gl.enable_vertex_attrib_array(4);
-            gl.vertex_attrib_pointer_f32(4, 4, glow::FLOAT, false, inst_stride, 16);
-            gl.vertex_attrib_divisor(4, 1);
-
-            gl.bind_vertex_array(None);
-
-            Self {
-                gl,
-                vao,
-                vbo,
-                ebo,
-                index_count: data.indices.len() as i32,
+            if face_normal.dot(to_face) < 0.0 {
+                tri.swap(1, 2);
+                flipped += 1;
             }
         }
+
+        if flipped > 0 {
+            log::warn!("fix_winding: corrected {} backwards triangle(s)", flipped);
+        }
     }
 }
 
-impl Drop for Mesh {
-    fn drop(&mut self) {
-        unsafe {
-            self.gl.delete_vertex_array(self.vao);
-        }
-    }
+/// A mesh is now just a view into the shared `GeometryPool` — it owns no GL
+/// resources of its own. Created by `Renderer::load_mesh`, which uploads the
+/// data into the pool and hands back this descriptor.
+#[derive(Clone, Copy, Debug)]
+pub struct Mesh {
+    pub base_vertex: i32,
+    pub first_index: u32,
+    pub index_count: i32,
 }

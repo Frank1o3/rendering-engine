@@ -2,6 +2,7 @@
 use crate::buffer::PersistentMappedBuffer;
 use crate::draw_indirect::{DrawElementsIndirectCommand, IndirectBuffer, MdiStrategy};
 use crate::frame_data::{FrameData, InstanceData};
+use crate::geometry_pool::GeometryPool;
 use crate::math;
 use crate::mesh::{Mesh, MeshData};
 use crate::pipeline::{PipelineCache, PipelineState, PipelineStateId};
@@ -48,6 +49,7 @@ pub struct Renderer {
     next_shader_id: u32,
     next_material_id: u32,
     transform_buffer: PersistentMappedBuffer,
+    geometry_pool: GeometryPool,
     width: i32,  // Window width for orthographic projection
     height: i32, // Window height for orthographic projection
 
@@ -72,6 +74,8 @@ impl Renderer {
             MAX_OBJECTS * std::mem::size_of::<InstanceData>(),
         );
 
+        let geometry_pool = GeometryPool::new(gl.clone(), transform_buffer.handle);
+
         let indirect_buffer = IndirectBuffer::new(gl.clone(), true);
 
         Self {
@@ -83,6 +87,7 @@ impl Renderer {
             sorted_instances: Vec::with_capacity(MAX_OBJECTS),
             indirect_cmds: Vec::with_capacity(1024),
             transform_buffer,
+            geometry_pool,
             next_mesh_id: 0,
             next_shader_id: 0,
             next_material_id: 0,
@@ -138,37 +143,46 @@ impl Renderer {
         self.mdi_strategy = strategy;
     }
 
-    pub fn load_mesh(&mut self, data: MeshData) -> MeshId {
+    // load_mesh — uploads into the pool instead of creating its own VAO/VBO/EBO
+    pub fn load_mesh(&mut self, mut data: MeshData) -> MeshId {
+        data.fix_winding();
+        let range = self.geometry_pool.upload(&data);
+
         let id = MeshId(self.next_mesh_id);
         self.next_mesh_id += 1;
-        let mesh = Mesh::new(self.gl.clone(), &data, self.transform_buffer.handle);
-        self.meshes.insert(id, mesh);
+        self.meshes.insert(
+            id,
+            Mesh {
+                base_vertex: range.base_vertex,
+                first_index: range.first_index,
+                index_count: range.index_count,
+            },
+        );
         id
     }
 
-    pub fn load_shader(&mut self, vs: &str, fs: &str) -> ShaderId {
+    pub fn load_shader(&mut self, vs: &str, gs: Option<&str>, fs: &str) -> ShaderId {
         let id = ShaderId(self.next_shader_id);
         self.next_shader_id += 1;
-        let shader = ShaderProgram::new(self.gl.clone(), vs, fs).expect("Failed to compile shader");
+        let shader =
+            ShaderProgram::new(self.gl.clone(), vs, gs, fs).expect("Failed to compile shader");
         self.shaders.insert(id, shader);
         id
     }
 
-    /// Loads a single shader pair from files
     pub fn load_shader_from_files(
         &mut self,
         vs_path: &Path,
+        gs_path: Option<&Path>,
         fs_path: &Path,
     ) -> Result<ShaderId, String> {
         let id = ShaderId(self.next_shader_id);
         self.next_shader_id += 1;
-        let shader = ShaderProgram::from_files(self.gl.clone(), vs_path, fs_path)?;
+        let shader = ShaderProgram::from_files(self.gl.clone(), vs_path, gs_path, fs_path)?;
         self.shaders.insert(id, shader);
         Ok(id)
     }
 
-    /// Scans a directory for `.vert` and `.frag` pairs, loads them all,
-    /// and returns a map of `ShaderName -> ShaderId`.
     pub fn load_shaders_from_dir(
         &mut self,
         dir: &Path,
@@ -185,20 +199,34 @@ impl Renderer {
             let entry = entry.map_err(|e| e.to_string())?;
             let path = entry.path();
 
-            // Look for vertex shaders
             if path.extension().and_then(|s| s.to_str()) == Some("vert") {
                 let stem = path.file_stem().unwrap().to_str().unwrap().to_string();
                 let frag_path = path.with_extension("frag");
+                let geom_path = path.with_extension("geom"); // NEW — optional
 
                 if frag_path.exists() {
-                    match self.load_shader_from_files(&path, &frag_path) {
+                    let gs = if geom_path.exists() {
+                        Some(geom_path.as_path())
+                    } else {
+                        None
+                    };
+
+                    match self.load_shader_from_files(&path, gs, &frag_path) {
                         Ok(id) => {
-                            log::info!("Loaded shader: '{}'", stem);
+                            log::info!(
+                                "Loaded shader: '{}'{}",
+                                stem,
+                                if gs.is_some() {
+                                    " (+ geometry stage)"
+                                } else {
+                                    ""
+                                }
+                            );
                             loaded_shaders.insert(stem, id);
                         }
                         Err(e) => {
                             log::error!("Failed to compile shader '{}': {}", stem, e);
-                            return Err(e); // Fail fast on startup if a shader is broken
+                            return Err(e);
                         }
                     }
                 } else {
@@ -332,7 +360,6 @@ impl Renderer {
         let start_offset = transform_offset;
         let total_instances = self.sorted_instances.len();
 
-        // 1. Write instance attributes to persistent GPU memory contiguously
         for i in 0..total_instances {
             if transform_offset >= MAX_OBJECTS {
                 log::warn!(
@@ -347,15 +374,20 @@ impl Renderer {
             transform_offset += 1;
         }
 
-        // 2. Iterate and group by (material_id, mesh_id)
         let actual_instances = transform_offset - start_offset;
+
+        // NEW: bind the pool's VAO once for the whole pass — every mesh now
+        // shares it, so this replaces what used to be a bind-per-mesh-switch.
+        unsafe {
+            self.gl.bind_vertex_array(Some(self.geometry_pool.vao));
+        }
+
         let mut i = 0;
         while i < actual_instances {
             let start_inst = &self.sorted_instances[i];
             let mat_id = start_inst.material_id;
             let mesh_id = start_inst.mesh_id;
 
-            // Find the end of this contiguous (material, mesh) group
             let mut group_end = i + 1;
             while group_end < actual_instances {
                 let inst = &self.sorted_instances[group_end];
@@ -364,55 +396,47 @@ impl Renderer {
                 }
                 group_end += 1;
             }
-
             let group_size = group_end - i;
 
-            // 1. Extract Copy data to release all borrows on `self` immediately
             let material_entry = *self.materials.get(&mat_id).expect("Material ID not found");
             let pipeline_state = *self
                 .pipeline_cache
                 .get_by_id(material_entry.pipeline_id)
                 .expect("Pipeline state ID not found in cache");
 
-            // 2. Apply pipeline state (borrows `self` mutably, but no outstanding borrows exist now)
             self.apply_pipeline(&pipeline_state);
 
-            // 3. Now it is safe to borrow `self.meshes` and `self.shaders` again
             let mesh = self.meshes.get(&mesh_id).expect("Mesh ID not found");
             let shader = self
                 .shaders
                 .get(&material_entry.shader_id)
                 .expect("Shader ID not found");
 
-            // Build the indirect command for this group
             let base_instance = (start_offset + i) as u32;
+
+            // FIXED: first_index/base_vertex now come from the mesh's real
+            // location in the shared pool, instead of the old hardcoded 0/0
+            // that only happened to work when every mesh had its own buffer.
             let cmd = DrawElementsIndirectCommand {
                 count: mesh.index_count as u32,
                 instance_count: group_size as u32,
-                first_index: 0,
-                base_vertex: 0,
+                first_index: mesh.first_index,
+                base_vertex: mesh.base_vertex,
                 base_instance,
             };
 
-            // Upload command to DRAW_INDIRECT_BUFFER
             self.indirect_cmds.clear();
             self.indirect_cmds.push(cmd);
             self.indirect_buffer.upload(&self.indirect_cmds);
 
-            // If MultiCount strategy, upload count
             if self.mdi_strategy == MdiStrategy::MultiCount {
                 self.indirect_buffer.upload_count(1);
             }
 
-            unsafe {
-                // Set VP matrix uniform
-                shader.set_vp(vp);
-                // Bind VAO
-                self.gl.bind_vertex_array(Some(mesh.vao));
-                // Dispatch indirect drawing using chosen MDI strategy
-                self.indirect_buffer
-                    .dispatch(self.mdi_strategy, glow::UNSIGNED_INT, 0, 1, 1);
-            }
+            shader.set_vp(vp);
+            // No more per-group VAO bind — already bound above.
+            self.indirect_buffer
+                .dispatch(self.mdi_strategy, glow::UNSIGNED_INT, 0, 1, 1);
 
             i = group_end;
         }
