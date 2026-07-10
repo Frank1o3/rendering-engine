@@ -99,7 +99,7 @@ impl PipelineState {
     pub fn default_opaque(shader_id: u32) -> Self {
         Self {
             shader_id,
-            cull_mode: CullMode::Back, // Cull the BACK faces, not the front!
+            cull_mode: CullMode::None, // Cull the BACK faces, not the front!
             depth_test: true,
             depth_write: true,
             depth_func: DepthFunc::Less,
