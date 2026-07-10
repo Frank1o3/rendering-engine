@@ -4,6 +4,7 @@ use crate::draw_indirect::{DrawElementsIndirectCommand, IndirectBuffer, MdiStrat
 use crate::frame_data::{FrameData, InstanceData};
 use crate::math;
 use crate::mesh::{Mesh, MeshData};
+use crate::pipeline::{PipelineCache, PipelineState, PipelineStateId};
 use crate::scene::{ObjectHandle, ObjectKind, Scene, SortedInstance};
 use crate::shader::ShaderProgram;
 use crate::triple_buffer::ReadHandle;
@@ -28,12 +29,19 @@ pub struct ShaderId(pub u32);
 #[repr(transparent)]
 pub struct MaterialId(pub u32);
 
+/// Material entry storing both shader and pipeline state
+#[derive(Debug, Clone, Copy)]
+pub struct MaterialEntry {
+    pub shader_id: ShaderId,
+    pub pipeline_id: PipelineStateId,
+}
+
 pub struct Renderer {
     gl: Arc<glow::Context>,
     read_handle: ReadHandle<FrameData>, // <--- The renderer owns its data source
     shaders: HashMap<ShaderId, ShaderProgram>,
     meshes: HashMap<MeshId, Mesh>,
-    materials: HashMap<MaterialId, ShaderId>,
+    materials: HashMap<MaterialId, MaterialEntry>,
     sorted_instances: Vec<SortedInstance>, // Pre-allocated scratch buffer for sorting
     indirect_cmds: Vec<DrawElementsIndirectCommand>, // Pre-allocated scratch buffer for indirect commands
     next_mesh_id: u32,
@@ -47,17 +55,16 @@ pub struct Renderer {
     pub scene: Scene,
     mdi_strategy: MdiStrategy,
     indirect_buffer: IndirectBuffer,
+    
+    // Phase 3: Pipeline State Caching
+    pipeline_cache: PipelineCache,
+    current_pipeline_id: Option<PipelineStateId>,
 }
 
 impl Renderer {
     /// The game engine passes the GL context AND the ReadHandle on creation.
     pub fn new(gl: glow::Context, read_handle: ReadHandle<FrameData>) -> Self {
         let gl = Arc::new(gl);
-        unsafe {
-            gl.enable(glow::DEPTH_TEST);
-            gl.depth_func(glow::LESS);
-            gl.clear_color(0.1, 0.1, 0.1, 1.0);
-        }
 
         // Allocate persistent buffer for compact transform InstanceData (65536 * 32 bytes = 2MB)
         let transform_buffer = PersistentMappedBuffer::new(
@@ -84,6 +91,8 @@ impl Renderer {
             scene: Scene::new(),
             mdi_strategy: MdiStrategy::Multi,
             indirect_buffer,
+            pipeline_cache: PipelineCache::new(),
+            current_pipeline_id: None,
         }
     }
 
@@ -201,10 +210,11 @@ impl Renderer {
         Ok(loaded_shaders)
     }
 
-    pub fn create_material(&mut self, shader_id: ShaderId) -> MaterialId {
+    pub fn create_material(&mut self, shader_id: ShaderId, pipeline_state: PipelineState) -> MaterialId {
         let id = MaterialId(self.next_material_id);
         self.next_material_id += 1;
-        self.materials.insert(id, shader_id);
+        let pipeline_id = self.pipeline_cache.register(pipeline_state);
+        self.materials.insert(id, MaterialEntry { shader_id, pipeline_id });
         id
     }
 
@@ -224,6 +234,9 @@ impl Renderer {
         if !self.read_handle.consume(&mut current_frame) {
             return;
         }
+
+        // Reset pipeline state at start of frame to ensure clean state
+        self.current_pipeline_id = None;
 
         unsafe {
             self.gl
@@ -344,8 +357,12 @@ impl Renderer {
 
             let group_size = group_end - i;
             let mesh = self.meshes.get(&mesh_id).unwrap();
-            let shader_id = self.materials.get(&mat_id).unwrap();
-            let shader = self.shaders.get(shader_id).unwrap();
+            let material_entry = self.materials.get(&mat_id).unwrap();
+            let shader = self.shaders.get(&material_entry.shader_id).unwrap();
+            let pipeline_state = self.pipeline_cache.get_by_id(material_entry.pipeline_id).unwrap();
+
+            // Apply pipeline state (with caching to avoid redundant GL calls)
+            self.apply_pipeline(pipeline_state);
 
             // Build the indirect command for this group
             let base_instance = (start_offset + i) as u32;
@@ -368,8 +385,7 @@ impl Renderer {
             }
 
             unsafe {
-                // Bind shader program and set VP matrix
-                self.gl.use_program(Some(shader.program));
+                // Set VP matrix uniform
                 shader.set_vp(vp);
 
                 // Bind VAO
@@ -385,9 +401,58 @@ impl Renderer {
 
         unsafe {
             self.gl.bind_vertex_array(None);
-            self.gl.use_program(None);
         }
 
         transform_offset
+    }
+
+    /// Applies a pipeline state, skipping redundant GL calls if the state is already bound
+    fn apply_pipeline(&mut self, pipeline: &PipelineState) {
+        // Check if we already have this pipeline bound
+        if let Some(current_id) = self.current_pipeline_id {
+            if current_id == pipeline.hash().into() {
+                return; // State already bound, skip redundant calls
+            }
+        }
+
+        unsafe {
+            // Bind shader program
+            self.gl.use_program(Some(pipeline.shader_id));
+
+            // Set face culling
+            match pipeline.cull_mode {
+                crate::pipeline::CullMode::None => self.gl.disable(glow::CULL_FACE),
+                crate::pipeline::CullMode::Front => {
+                    self.gl.enable(glow::CULL_FACE);
+                    self.gl.cull_face(glow::FRONT);
+                }
+                crate::pipeline::CullMode::Back => {
+                    self.gl.enable(glow::CULL_FACE);
+                    self.gl.cull_face(glow::BACK);
+                }
+            }
+
+            // Set depth test
+            if pipeline.depth_test {
+                self.gl.enable(glow::DEPTH_TEST);
+                self.gl.depth_func(pipeline.depth_func.to_glow());
+            } else {
+                self.gl.disable(glow::DEPTH_TEST);
+            }
+
+            // Set depth write mask
+            self.gl.depth_mask(pipeline.depth_write);
+
+            // Set blending
+            if pipeline.blend_enabled {
+                self.gl.enable(glow::BLEND);
+                self.gl.blend_func(pipeline.src_factor.to_glow(), pipeline.dst_factor.to_glow());
+            } else {
+                self.gl.disable(glow::BLEND);
+            }
+        }
+
+        // Update current pipeline ID
+        self.current_pipeline_id = Some(PipelineStateId(pipeline.hash()));
     }
 }
