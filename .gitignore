@@ -6,19 +6,10 @@
 *.so
 *.a
 *.out
-target/
 **/*.rs.bk
 
-# Dependencies
-**/node_modules/
-**/.venv/
-**/venv/
-**/__pycache__/
-**/.mypy_cache/
-**/.pytest_cache/
-**/.gradle/
-**/vendor/
-**/deps/
+# Dependency (Rust)
+target/
 
 # Logs and temp files
 *.log

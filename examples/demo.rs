@@ -23,13 +23,13 @@ use winit::{
 
 use glam::{Quat, Vec3};
 use rendering_engine::{
+    MdiStrategy,
     engine::{MaterialId, MeshId, Renderer},
     frame_data::{FrameData, RenderCommand},
     mesh::{MeshData, Vertex},
     pipeline::PipelineState,
     scene::ObjectKind,
     triple_buffer::{ReadHandle, WriteHandle, new_triple_buffer},
-    MdiStrategy,
 };
 
 // ==========================================
