@@ -1,17 +1,25 @@
 // src/geometry_pool.rs
 //
 // A single shared VBO + EBO that every mesh sub-allocates from, plus one
-// shared VAO. Replaces the old model where each `Mesh` owned its own
-// VBO/EBO/VAO. This is what makes `first_index`/`base_vertex` in
-// DrawElementsIndirectCommand meaningful, and is the prerequisite for
-// real multi-draw-indirect later (one bind, many commands, one call).
+// shared VAO.  Replaces the old model where each `Mesh` owned its own
+// VBO/EBO/VAO.
+//
+// Vertex layout (20 bytes, must match mesh.rs Vertex):
+//
+//   location 0 — position  vec3  f32  offset  0   (12 bytes)
+//   location 1 — normal    vec3  i8   offset 12   ( 4 bytes, xyz packed + 1 pad, normalised)
+//   location 2 — color     vec4  u8   offset 16   ( 4 bytes, normalised)
+//
+// Instance layout (32 bytes, InstanceData from frame_data.rs):
+//
+//   location 3 — iPosition vec3  f32  offset  0
+//   location 4 — iScale    float f32  offset 12
+//   location 5 — iRotation vec4  f32  offset 16   (quaternion xyzw)
 
 use crate::mesh::{MeshData, Vertex};
 use glow::HasContext;
 use std::sync::Arc;
 
-// Tune these for your scene. Immutable storage is allocated once at startup;
-// exceeding either bound is a hard error rather than silent corruption.
 pub const MAX_POOL_VERTICES: usize = 1_000_000;
 pub const MAX_POOL_INDICES: usize = 3_000_000;
 
@@ -33,9 +41,8 @@ pub struct GeometryPool {
 }
 
 impl GeometryPool {
-    /// `transform_buffer` is the same persistent-mapped instance buffer the
-    /// engine already owns — instance attributes (locations 2/3/4) are bound
-    /// once here, on the pool's single VAO, instead of once per mesh.
+    /// `transform_buffer` is the persistent-mapped instance buffer the engine
+    /// already owns — instance attributes are bound once here on the shared VAO.
     pub fn new(gl: Arc<glow::Context>, transform_buffer: glow::Buffer) -> Self {
         unsafe {
             let vao = gl.create_vertex_array().expect("Failed to create pool VAO");
@@ -44,8 +51,7 @@ impl GeometryPool {
 
             gl.bind_vertex_array(Some(vao));
 
-            // Reserve immutable storage sized for the whole pool up front.
-            // Sub-allocations write into this with buffer_sub_data.
+            // ── Geometry buffers ────────────────────────────────────────────
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
             gl.buffer_data_size(
                 glow::ARRAY_BUFFER,
@@ -59,32 +65,40 @@ impl GeometryPool {
                 glow::STATIC_DRAW,
             );
 
-            let stride = std::mem::size_of::<Vertex>() as i32;
+            let stride = std::mem::size_of::<Vertex>() as i32; // 20
 
-            // Attribute 0: Position
+            // location 0: position — vec3 f32, offset 0
             gl.enable_vertex_attrib_array(0);
             gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, stride, 0);
 
-            // Attribute 1: Color
+            // location 1: normal — vec3 GL_BYTE normalised, offset 12
+            // The fourth byte (offset 15) is padding and is silently ignored
+            // because we only read 3 components.
             gl.enable_vertex_attrib_array(1);
-            gl.vertex_attrib_pointer_f32(1, 4, glow::UNSIGNED_BYTE, true, stride, 12);
+            gl.vertex_attrib_pointer_f32(1, 3, glow::BYTE, true, stride, 12);
 
-            // Instanced transform attributes (locations 2, 3, 4) — same layout
-            // as before, now declared once on the shared VAO.
-            gl.bind_buffer(glow::ARRAY_BUFFER, Some(transform_buffer));
-            let inst_stride = 32; // InstanceData: 12 (pos) + 4 (scale) + 16 (rot)
-
+            // location 2: color — vec4 GL_UNSIGNED_BYTE normalised, offset 16
             gl.enable_vertex_attrib_array(2);
-            gl.vertex_attrib_pointer_f32(2, 3, glow::FLOAT, false, inst_stride, 0);
-            gl.vertex_attrib_divisor(2, 1);
+            gl.vertex_attrib_pointer_f32(2, 4, glow::UNSIGNED_BYTE, true, stride, 16);
 
+            // ── Instance buffer (locations 3 / 4 / 5) ───────────────────────
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(transform_buffer));
+            let inst_stride: i32 = 32; // InstanceData: 12 (pos) + 4 (scale) + 16 (rot)
+
+            // location 3: iPosition vec3
             gl.enable_vertex_attrib_array(3);
-            gl.vertex_attrib_pointer_f32(3, 1, glow::FLOAT, false, inst_stride, 12);
+            gl.vertex_attrib_pointer_f32(3, 3, glow::FLOAT, false, inst_stride, 0);
             gl.vertex_attrib_divisor(3, 1);
 
+            // location 4: iScale float
             gl.enable_vertex_attrib_array(4);
-            gl.vertex_attrib_pointer_f32(4, 4, glow::FLOAT, false, inst_stride, 16);
+            gl.vertex_attrib_pointer_f32(4, 1, glow::FLOAT, false, inst_stride, 12);
             gl.vertex_attrib_divisor(4, 1);
+
+            // location 5: iRotation vec4 (quaternion xyzw)
+            gl.enable_vertex_attrib_array(5);
+            gl.vertex_attrib_pointer_f32(5, 4, glow::FLOAT, false, inst_stride, 16);
+            gl.vertex_attrib_divisor(5, 1);
 
             gl.bind_vertex_array(None);
 
@@ -100,7 +114,6 @@ impl GeometryPool {
     }
 
     /// Uploads a mesh into the next free region of the pool.
-    /// Returns the range needed to build indirect draw commands against it.
     pub fn upload(&mut self, data: &MeshData) -> MeshRange {
         let base_vertex = self.vertex_cursor as i32;
         let first_index = self.index_cursor as u32;

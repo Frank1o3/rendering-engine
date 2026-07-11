@@ -30,8 +30,8 @@ unsafe fn compile_shader(
 }
 
 impl ShaderProgram {
-    /// Compiles from raw source strings. `gs_src` is optional — pass `None`
-    /// for a standard vertex+fragment program.
+    /// Compiles from raw source strings.
+    /// `gs_src` is optional — pass `None` for a standard vertex+fragment program.
     pub fn new(
         gl: Arc<glow::Context>,
         vs_src: &str,
@@ -71,22 +71,19 @@ impl ShaderProgram {
             gl.attach_shader(program, fs);
             gl.link_program(program);
 
-            let cleanup = |gl: &glow::Context| {
-                gl.delete_shader(vs);
-                if let Some(gs) = gs {
-                    gl.delete_shader(gs);
-                }
-                gl.delete_shader(fs);
-            };
+            // Shaders can be deleted after linking — driver keeps them alive
+            // as long as they're attached to a live program.
+            gl.delete_shader(vs);
+            if let Some(gs) = gs {
+                gl.delete_shader(gs);
+            }
+            gl.delete_shader(fs);
 
             if !gl.get_program_link_status(program) {
                 let log = gl.get_program_info_log(program);
                 gl.delete_program(program);
-                cleanup(&gl);
                 return Err(format!("Shader Link Error:\n{}", log));
             }
-
-            cleanup(&gl);
 
             let loc_vp = gl.get_uniform_location(program, "uVP");
 
@@ -119,10 +116,53 @@ impl ShaderProgram {
         Self::new(gl, &vs_src, gs_src.as_deref(), &fs_src)
     }
 
+    // ── Uniform setters ──────────────────────────────────────────────────────
+
     pub fn set_vp(&self, vp: &glam::Mat4) {
         unsafe {
             self.gl
                 .uniform_matrix_4_f32_slice(self.loc_vp.as_ref(), false, &vp.to_cols_array());
+        }
+    }
+
+    /// Sets a named vec3 uniform. Returns `false` if the uniform doesn't exist
+    /// in this program (not an error — inactive uniforms are valid GLSL).
+    pub fn set_vec3(&self, name: &str, v: glam::Vec3) -> bool {
+        unsafe {
+            match self.gl.get_uniform_location(self.program, name) {
+                Some(loc) => {
+                    self.gl.uniform_3_f32(Some(&loc), v.x, v.y, v.z);
+                    true
+                }
+                None => false,
+            }
+        }
+    }
+
+    /// Sets a named float uniform.
+    pub fn set_f32(&self, name: &str, v: f32) -> bool {
+        unsafe {
+            match self.gl.get_uniform_location(self.program, name) {
+                Some(loc) => {
+                    self.gl.uniform_1_f32(Some(&loc), v);
+                    true
+                }
+                None => false,
+            }
+        }
+    }
+
+    /// Sets a named mat4 uniform.
+    pub fn set_mat4(&self, name: &str, m: &glam::Mat4) -> bool {
+        unsafe {
+            match self.gl.get_uniform_location(self.program, name) {
+                Some(loc) => {
+                    self.gl
+                        .uniform_matrix_4_f32_slice(Some(&loc), false, &m.to_cols_array());
+                    true
+                }
+                None => false,
+            }
         }
     }
 }
