@@ -1,45 +1,4 @@
 ```
-# Compiled and build artifacts
-*.o
-*.obj
-*.exe
-*.dll
-*.so
-*.a
-*.out
 target/
-
-# Dependencies
-**/node_modules/
-**/.venv/
-**/venv/
-**/__pycache__/
-**/.mypy_cache/
-**/.pytest_cache/
-**/.gradle/
-**/vendor/
-**/deps/
-
-# Logs and temp files
-*.log
-*.tmp
-*.swp
-*.swo
-
-# Environment
-.env
-.env.local
-*.env.*
-
-# Editors
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Build and distribution
-dist/
-build/
-*.pyc
-*.class
+**/*.rs.bk
 ```
