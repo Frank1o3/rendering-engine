@@ -294,8 +294,6 @@ impl ApplicationHandler for DemoApp {
 
         // Load Assets
         let mesh_id = renderer.load_mesh(create_cube_mesh());
-
-        // Load UI Mesh (A simple 1x1 white quad)
         let ui_mesh_id = renderer.load_mesh(create_quad_mesh());
 
         let shader_map = renderer
@@ -304,7 +302,6 @@ impl ApplicationHandler for DemoApp {
         let shader_id = *shader_map.get("basic").expect("Missing 'basic' shader");
         let ui_shader_id = *shader_map.get("ui").expect("Missing 'ui' shader");
 
-        // Create materials with pipeline states
         let opaque_pipeline = PipelineState::default_opaque(shader_id.0);
         let material_id = renderer.create_material(shader_id, opaque_pipeline);
 
@@ -330,7 +327,7 @@ impl ApplicationHandler for DemoApp {
             current_fps: 0.0,
             width: 1280,
             height: 720,
-            camera_pos: Vec3::new(0.0, 2.0, 10.0), // Start slightly above and back
+            camera_pos: Vec3::new(0.0, 2.0, 10.0),
             camera_yaw: 0.0,
             camera_pitch: 0.0,
             keys: Keys::default(),
@@ -392,7 +389,6 @@ impl ApplicationHandler for DemoApp {
                                     }
                                 }
                             } else {
-                                // Defer grabbing until the next frame.
                                 self.pending_grab = true;
                             }
                         }
@@ -440,7 +436,10 @@ impl ApplicationHandler for DemoApp {
 
                 // 1. Delta Time
                 let now = Instant::now();
-                let delta_time = (now - state.last_frame).as_secs_f32();
+                // Clamp to 100 ms max: if the app was paused or the first frame
+                // took a long time to initialise, an unbounded delta would
+                // teleport the camera by many units in one step.
+                let delta_time = (now - state.last_frame).as_secs_f32().min(0.1);
                 state.last_frame = now;
 
                 // 2. Update Camera Transform
@@ -476,15 +475,12 @@ impl ApplicationHandler for DemoApp {
                 if velocity.length_squared() > 0.0 {
                     velocity = velocity.normalize();
                 }
-                state.camera_pos += velocity * 5.0 * delta_time; // 5.0 units per second
+                state.camera_pos += velocity * 5.0 * delta_time;
 
                 // 3. Build FrameData
                 let frame = state.write_handle.write_slot();
-                frame.commands.clear(); // Keep capacity, zero allocation!
-                frame.ui_commands.clear(); // Clear UI commands
-
-                // Note: The 10,201 static cubes are registered once at startup in resumed().
-                // Zero per-frame allocation, matrix building, or data mapping is done here!
+                frame.commands.clear();
+                frame.ui_commands.clear();
 
                 // ==========================================
                 // BUILD UI (Zero-Allocation Bitmap Font)
@@ -492,10 +488,10 @@ impl ApplicationHandler for DemoApp {
                 let fps = state.current_fps as u32;
                 let digits = [(fps / 100) % 10, (fps / 10) % 10, fps % 10];
 
-                let pixel_size = 8.0; // Spacing/grid step size for the font pixels
-                let square_size = 7.9; // Visual size of each individual square forming the numbers
-                let mut cursor_x = 10.0; // 10px padding from left
-                let cursor_y = 10.0; // 10px padding from top
+                let pixel_size = 8.0;
+                let square_size = 7.9;
+                let mut cursor_x = 10.0;
+                let cursor_y = 10.0;
 
                 let mut started = false;
                 for &d in &digits {
@@ -503,10 +499,8 @@ impl ApplicationHandler for DemoApp {
                         started = true;
                         let glyph = FONT[d as usize];
 
-                        // Iterate over the 5 rows and 3 columns of the glyph
                         for (row_idx, &row) in glyph.iter().enumerate() {
                             for col_idx in 0..3 {
-                                // Check if the bit is set (1 = draw pixel)
                                 if (row & (1 << (2 - col_idx))) != 0 {
                                     let x = cursor_x + col_idx as f32 * pixel_size;
                                     let y = cursor_y + row_idx as f32 * pixel_size;
@@ -521,7 +515,7 @@ impl ApplicationHandler for DemoApp {
                                 }
                             }
                         }
-                        cursor_x += 4.0 * pixel_size; // Advance cursor (3px width + 1px spacing)
+                        cursor_x += 4.0 * pixel_size;
                     }
                 }
 
@@ -552,10 +546,9 @@ impl ApplicationHandler for DemoApp {
         if let Some(state) = &mut self.state {
             if let DeviceEvent::MouseMotion { delta } = event {
                 if state.cursor_grabbed {
-                    // Note: If the mouse feels inverted, change -= to +=
                     state.camera_yaw -= delta.0 as f32 * 0.001;
                     state.camera_pitch -= delta.1 as f32 * 0.001;
-                    state.camera_pitch = state.camera_pitch.clamp(-1.5, 1.5); // Prevent flipping
+                    state.camera_pitch = state.camera_pitch.clamp(-1.5, 1.5);
                 }
             }
         }
@@ -578,9 +571,13 @@ fn main() {
     let event_loop = EventLoop::new().expect("Failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Poll);
 
+    // Request a 24-bit depth buffer explicitly. Without this the driver may
+    // or may not give you one depending on the platform and GPU. The depth
+    // test silently does nothing without a depth attachment.
     let template = ConfigTemplateBuilder::new()
         .with_alpha_size(8)
-        .with_transparency(false); // Opaque background for 3D
+        .with_depth_size(24) // ← ensure we always get a depth buffer
+        .with_transparency(false);
 
     let mut app = DemoApp::new(template);
     event_loop.run_app(&mut app).expect("Event loop failed");

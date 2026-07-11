@@ -39,47 +39,62 @@ pub struct MaterialEntry {
 
 pub struct Renderer {
     gl: Arc<glow::Context>,
-    read_handle: ReadHandle<FrameData>, // <--- The renderer owns its data source
+    read_handle: ReadHandle<FrameData>,
     shaders: HashMap<ShaderId, ShaderProgram>,
     meshes: HashMap<MeshId, Mesh>,
     materials: HashMap<MaterialId, MaterialEntry>,
-    sorted_instances: Vec<SortedInstance>, // Pre-allocated scratch buffer for sorting
-    indirect_cmds: Vec<DrawElementsIndirectCommand>, // Pre-allocated scratch buffer for indirect commands
+    sorted_instances: Vec<SortedInstance>,
+    indirect_cmds: Vec<DrawElementsIndirectCommand>,
     next_mesh_id: u32,
     next_shader_id: u32,
     next_material_id: u32,
     transform_buffer: PersistentMappedBuffer,
     geometry_pool: GeometryPool,
-    width: i32,  // Window width for orthographic projection
-    height: i32, // Window height for orthographic projection
+    width: i32,
+    height: i32,
 
-    // Scene Object registry
     pub scene: Scene,
     mdi_strategy: MdiStrategy,
     indirect_buffer: IndirectBuffer,
 
-    // Phase 3: Pipeline State Caching
     pipeline_cache: PipelineCache,
     current_pipeline_id: Option<PipelineStateId>,
+
+    /// Most recently consumed frame. Re-rendered on frames where the producer
+    /// hasn't published anything new yet, preventing blank frames.
+    last_frame: FrameData,
+    /// False until at least one frame has been consumed from the triple buffer.
+    has_frame: bool,
 }
 
 impl Renderer {
-    /// The game engine passes the GL context AND the ReadHandle on creation.
     pub fn new(gl: glow::Context, read_handle: ReadHandle<FrameData>) -> Self {
         let gl = Arc::new(gl);
 
-        // Allocate persistent buffer for compact transform InstanceData (65536 * 32 bytes = 2MB)
+        // Establish the permanent OpenGL state that never changes between frames.
+        // Doing this once here prevents any draw path from accidentally skipping it.
+        unsafe {
+            // Depth test on with standard less-than comparison.
+            gl.enable(glow::DEPTH_TEST);
+            gl.depth_func(glow::LESS);
+
+            // Depth writes on. MUST be true before the first clear (see render()).
+            gl.depth_mask(true);
+
+            // Background colour: dark grey so a blank frame is visually obvious.
+            gl.clear_color(0.1, 0.1, 0.1, 1.0);
+        }
+
         let transform_buffer = PersistentMappedBuffer::new(
             gl.clone(),
             MAX_OBJECTS * std::mem::size_of::<InstanceData>(),
         );
 
         let geometry_pool = GeometryPool::new(gl.clone(), transform_buffer.handle);
-
         let indirect_buffer = IndirectBuffer::new(gl.clone(), true);
 
         Self {
-            gl: gl.clone(),
+            gl,
             read_handle,
             shaders: HashMap::new(),
             meshes: HashMap::new(),
@@ -91,13 +106,15 @@ impl Renderer {
             next_mesh_id: 0,
             next_shader_id: 0,
             next_material_id: 0,
-            width: 1280, // Default window width
-            height: 720, // Default window height
+            width: 1280,
+            height: 720,
             scene: Scene::new(),
             mdi_strategy: MdiStrategy::Multi,
             indirect_buffer,
             pipeline_cache: PipelineCache::new(),
             current_pipeline_id: None,
+            last_frame: FrameData::default(),
+            has_frame: false,
         }
     }
 
@@ -143,7 +160,6 @@ impl Renderer {
         self.mdi_strategy = strategy;
     }
 
-    // load_mesh — uploads into the pool instead of creating its own VAO/VBO/EBO
     pub fn load_mesh(&mut self, mut data: MeshData) -> MeshId {
         data.fix_winding();
         let range = self.geometry_pool.upload(&data);
@@ -202,7 +218,7 @@ impl Renderer {
             if path.extension().and_then(|s| s.to_str()) == Some("vert") {
                 let stem = path.file_stem().unwrap().to_str().unwrap().to_string();
                 let frag_path = path.with_extension("frag");
-                let geom_path = path.with_extension("geom"); // NEW — optional
+                let geom_path = path.with_extension("geom");
 
                 if frag_path.exists() {
                     let gs = if geom_path.exists() {
@@ -216,11 +232,7 @@ impl Renderer {
                             log::info!(
                                 "Loaded shader: '{}'{}",
                                 stem,
-                                if gs.is_some() {
-                                    " (+ geometry stage)"
-                                } else {
-                                    ""
-                                }
+                                if gs.is_some() { " (+ geometry stage)" } else { "" }
                             );
                             loaded_shaders.insert(stem, id);
                         }
@@ -264,78 +276,93 @@ impl Renderer {
         }
     }
 
-    /// The main render loop. No arguments needed!
-    /// It pulls camera and dynamic data directly from the lock-free buffer,
-    /// combines them with static/dynamic scene registry states, and dispatches MDI.
+    /// The main render function.
+    ///
+    /// Always clears both buffers before drawing. Depth mask is explicitly set
+    /// to `true` before every clear because the UI pipeline sets it to `false`
+    /// (transparent objects don't write depth), and OpenGL silently ignores
+    /// `glClear(GL_DEPTH_BUFFER_BIT)` when the depth mask is off — meaning
+    /// without this line the depth buffer would never clear after the first
+    /// frame that draws UI, corrupting all subsequent depth comparisons.
+    ///
+    /// If no new frame has been published yet the last consumed frame is
+    /// re-rendered rather than showing blank, which prevents flicker on frames
+    /// where the producer thread is momentarily slower than the renderer.
     pub fn render(&mut self) {
-        let mut current_frame = FrameData::default();
-        if !self.read_handle.consume(&mut current_frame) {
+        // Consume new frame data if the producer has published since last time.
+        if self.read_handle.consume(&mut self.last_frame) {
+            self.has_frame = true;
+        }
+
+        // ── THE CRITICAL FIX ──────────────────────────────────────────────────
+        // The UI pipeline sets depth_write = false → gl.depth_mask(false).
+        // In OpenGL, glClear(GL_DEPTH_BUFFER_BIT) is a no-op when the depth
+        // mask is false. Without this line, after the first UI frame renders,
+        // the depth buffer accumulates stale values forever: geometry that was
+        // occluded last frame fails the depth test this frame even when it's
+        // clearly in front, producing the "flickering in and out" symptom.
+        // Forcing the mask to true here guarantees the clear always works,
+        // regardless of what the previous frame's last pipeline state was.
+        unsafe {
+            self.gl.depth_mask(true);
+            self.gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+        }
+
+        if !self.has_frame {
             return;
         }
 
-        // Reset pipeline state at start of frame to ensure clean state
+        // Reset cached pipeline so apply_pipeline issues fresh GL calls on the
+        // first group — prevents state bleed from UI pass into 3D pass.
         self.current_pipeline_id = None;
-
-        unsafe {
-            self.gl
-                .clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
-        }
 
         // ==========================================
         // PASS 1: 3D SCENE (Perspective)
         // ==========================================
         let view = math::camera_to_view_matrix(
-            current_frame.camera_position,
-            current_frame.camera_rotation,
+            self.last_frame.camera_position,
+            self.last_frame.camera_rotation,
         );
         let proj = math::camera_to_projection_matrix(
-            current_frame.camera_fov,
-            current_frame.camera_aspect_ratio,
-            current_frame.camera_near,
-            current_frame.camera_far,
+            self.last_frame.camera_fov,
+            self.last_frame.camera_aspect_ratio,
+            self.last_frame.camera_near,
+            self.last_frame.camera_far,
         );
         let vp = proj * view;
 
-        // 1. Recompute cached transforms for dirty objects in Scene
         self.scene.flush_dirty();
-
-        // 2. Collect sorted instances from the Scene registry
         self.scene.collect_sorted_into(&mut self.sorted_instances);
 
-        // 3. Append dynamic 3D commands from FrameData
-        let dynamic_commands_exist = !current_frame.commands.is_empty();
-        for cmd in &current_frame.commands {
+        let dynamic_commands_exist = !self.last_frame.commands.is_empty();
+        for cmd in &self.last_frame.commands {
             self.sorted_instances.push(SortedInstance {
                 material_id: cmd.material_id,
                 mesh_id: cmd.mesh_id,
                 instance: cmd.to_instance_data(),
             });
         }
-
-        // 4. Sort the combined list if dynamic commands were added
         if dynamic_commands_exist {
             self.sorted_instances
                 .sort_unstable_by_key(|o| (o.material_id, o.mesh_id));
         }
 
-        // 5. Render standard 3D instances
         let mut transform_offset = 0;
         transform_offset = self.render_instances(&vp, transform_offset);
 
         // ==========================================
         // PASS 2: UI OVERLAY (Orthographic)
         // ==========================================
-        if !current_frame.ui_commands.is_empty() {
-            // Build a manual orthographic projection matrix
-            // Maps [0, width] to [-1, 1] and [0, height] to [-1, 1] (Y inverted)
+        if !self.last_frame.ui_commands.is_empty() {
             let w = self.width as f32;
             let h = self.height as f32;
+            // Maps pixel space [0, w] × [0, h] to NDC [-1, 1] × [1, -1].
+            // Y is inverted so pixel (0, 0) is the top-left corner.
             let ui_proj = glam::Mat4::from_translation(glam::Vec3::new(-1.0, 1.0, 0.0))
                 * glam::Mat4::from_scale(glam::Vec3::new(2.0 / w, -2.0 / h, 1.0));
 
-            // Load UI elements into sorted list
             self.sorted_instances.clear();
-            for cmd in &current_frame.ui_commands {
+            for cmd in &self.last_frame.ui_commands {
                 self.sorted_instances.push(SortedInstance {
                     material_id: cmd.material_id,
                     mesh_id: cmd.mesh_id,
@@ -345,13 +372,10 @@ impl Renderer {
             self.sorted_instances
                 .sort_unstable_by_key(|o| (o.material_id, o.mesh_id));
 
-            // Render UI overlay using dedicated orthographic pass
             self.render_instances(&ui_proj, transform_offset);
         }
     }
 
-    /// Helper method to batch and draw a slice of sorted instances.
-    /// Returns the new transform_offset so the next pass knows where to start writing.
     fn render_instances(&mut self, vp: &glam::Mat4, mut transform_offset: usize) -> usize {
         if self.sorted_instances.is_empty() {
             return transform_offset;
@@ -376,8 +400,6 @@ impl Renderer {
 
         let actual_instances = transform_offset - start_offset;
 
-        // NEW: bind the pool's VAO once for the whole pass — every mesh now
-        // shares it, so this replaces what used to be a bind-per-mesh-switch.
         unsafe {
             self.gl.bind_vertex_array(Some(self.geometry_pool.vao));
         }
@@ -414,9 +436,6 @@ impl Renderer {
 
             let base_instance = (start_offset + i) as u32;
 
-            // FIXED: first_index/base_vertex now come from the mesh's real
-            // location in the shared pool, instead of the old hardcoded 0/0
-            // that only happened to work when every mesh had its own buffer.
             let cmd = DrawElementsIndirectCommand {
                 count: mesh.index_count as u32,
                 instance_count: group_size as u32,
@@ -434,7 +453,6 @@ impl Renderer {
             }
 
             shader.set_vp(vp);
-            // No more per-group VAO bind — already bound above.
             self.indirect_buffer
                 .dispatch(self.mdi_strategy, glow::UNSIGNED_INT, 0, 1, 1);
 
@@ -448,26 +466,21 @@ impl Renderer {
         transform_offset
     }
 
-    /// Applies a pipeline state, skipping redundant GL calls if the state is already bound
     fn apply_pipeline(&mut self, pipeline: &PipelineState) {
-        // Check if we already have this pipeline bound
-        if let Some(current_id) = self.current_pipeline_id {
-            if current_id == pipeline.hash().into() {
-                return; // State already bound, skip redundant calls
-            }
+        let requested_id = PipelineStateId(pipeline.hash());
+
+        if self.current_pipeline_id == Some(requested_id) {
+            return;
         }
 
-        // FIX: Look up the actual ShaderProgram to get its real OpenGL handle!
         let shader = self
             .shaders
             .get(&ShaderId(pipeline.shader_id))
             .expect("Shader not found in apply_pipeline");
 
         unsafe {
-            // Bind the ACTUAL OpenGL program handle
             self.gl.use_program(Some(shader.program));
 
-            // Set face culling
             match pipeline.cull_mode {
                 crate::pipeline::CullMode::None => self.gl.disable(glow::CULL_FACE),
                 crate::pipeline::CullMode::Front => {
@@ -480,7 +493,6 @@ impl Renderer {
                 }
             }
 
-            // Set depth test
             if pipeline.depth_test {
                 self.gl.enable(glow::DEPTH_TEST);
                 self.gl.depth_func(pipeline.depth_func.to_glow());
@@ -488,10 +500,12 @@ impl Renderer {
                 self.gl.disable(glow::DEPTH_TEST);
             }
 
-            // Set depth write mask
+            // NOTE: depth_mask is intentionally NOT cached or skipped here.
+            // It must always be applied because render() resets it to true
+            // before clearing. If the UI pipeline sets it to false and we
+            // skip it on re-entry, the 3D pass would see the wrong mask.
             self.gl.depth_mask(pipeline.depth_write);
 
-            // Set blending
             if pipeline.blend_enabled {
                 self.gl.enable(glow::BLEND);
                 self.gl
@@ -501,7 +515,6 @@ impl Renderer {
             }
         }
 
-        // Update current pipeline ID
-        self.current_pipeline_id = Some(PipelineStateId(pipeline.hash()));
+        self.current_pipeline_id = Some(requested_id);
     }
 }

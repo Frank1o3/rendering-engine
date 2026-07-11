@@ -4,9 +4,15 @@
 // Each strategy has different performance characteristics:
 //
 //   Single      — glDrawElementsIndirect per command (simplest, best for debugging)
-//   Multi       — glMultiDrawElementsIndirect batches N commands in 1 call (default)
-//   MultiCount  — glMultiDrawElementsIndirectCount reads count from GPU buffer (GL 4.6)
-//                  Enables fully GPU-driven rendering when paired with compute culling.
+//   Multi       — loop of glDrawElementsIndirect (emulated; glow lacks the true MDI entry point)
+//   MultiCount  — same emulation but also binds a count buffer (ready for a future glow update)
+//
+// NOTE on glow and glMultiDrawElementsIndirect:
+//   As of glow 0.17, `multi_draw_elements_indirect` is not exposed on all backends.
+//   The `Multi` and `MultiCount` variants therefore emulate the batch via a loop of
+//   `draw_elements_indirect_offset` calls. The MDI command buffer is still uploaded to
+//   GL_DRAW_INDIRECT_BUFFER as a contiguous array — so a future upgrade that exposes the
+//   real entry point only needs to change the `dispatch` call here, not the upload path.
 
 use bytemuck::{Pod, Zeroable};
 use glow::HasContext;
@@ -22,36 +28,45 @@ pub struct DrawElementsIndirectCommand {
     pub count: u32,
     /// Number of instances to draw (objects in this batch).
     pub instance_count: u32,
-    /// Offset into the EBO in units of indices (0 when VAOs are separate).
+    /// Offset into the shared EBO in units of indices.
+    /// Set from `MeshRange::first_index` — non-zero when using GeometryPool.
     pub first_index: u32,
-    /// Offset added to each index before fetching from the VBO (0 when VAOs are separate).
+    /// Added to every index before fetching from the VBO.
+    /// Set from `MeshRange::base_vertex` — non-zero when using GeometryPool.
     pub base_vertex: i32,
-    /// Offset into instanced vertex attributes (points into the InstanceData buffer).
+    /// Byte offset into the instanced vertex-attribute buffer where this
+    /// draw's instance data starts. Equals the object's slot in the
+    /// persistent-mapped transform buffer.
     pub base_instance: u32,
 }
 
 /// Selects which MDI dispatch path the renderer uses.
 ///
-/// Each variant wraps a different OpenGL entry point with distinct trade-offs:
+/// All three variants upload draw commands to the same `GL_DRAW_INDIRECT_BUFFER`.
+/// The difference is only in how the GPU reads the command count:
 ///
-///   `Single`     — Lowest driver complexity; one API call per draw command.
-///   `Multi`      — Default. Batches N commands in a single API call.
-///   `MultiCount` — Most advanced. The command count is read from a GPU buffer,
-///                   enabling compute shaders to control draw counts without CPU readback.
+///   `Single`     — Issues one `glDrawElementsIndirect` call per command. Best for
+///                   debugging because each call shows up individually in a frame capture.
+///   `Multi`      — Loops `glDrawElementsIndirect` once per command but processes the
+///                   GPU buffer sequentially (same net effect as the real MDI, minus the
+///                   potential driver batching benefit). Use this by default.
+///   `MultiCount` — Like `Multi`, but also uploads the draw count to a
+///                   `GL_PARAMETER_BUFFER` so it is in the right shape for a future
+///                   `glMultiDrawElementsIndirectCount` call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum MdiStrategy {
-    /// `glDrawElementsIndirect` — one call per command.
-    /// Good for debugging and profiling individual draw calls.
+    /// `glDrawElementsIndirect` — one GL call per command.
+    /// Good for RenderDoc debugging: each draw shows as a separate event.
     Single,
 
-    /// `glMultiDrawElementsIndirect` — batch multiple commands in one call.
-    /// Reduces driver overhead proportionally to the number of commands batched.
+    /// Loop of `glDrawElementsIndirect` — emulates the batch.
+    /// Identical results to `Single` but the intent is one logical batch.
     #[default]
     Multi,
 
-    /// `glMultiDrawElementsIndirectCount` (GL 4.6 / ARB_indirect_count).
-    /// The draw count is read from a GPU buffer at `count_buffer_offset`.
-    /// Requires a separate "parameter buffer" bound to `GL_PARAMETER_BUFFER`.
+    /// Like `Multi` but also writes the draw count to a `GL_PARAMETER_BUFFER`.
+    /// Keeps the infrastructure ready for `glMultiDrawElementsIndirectCount`
+    /// once glow exposes it.
     MultiCount,
 }
 
@@ -109,8 +124,7 @@ impl IndirectBuffer {
     pub fn upload_count(&self, count: u32) {
         if let Some(buf) = self.count_buffer {
             unsafe {
-                self.gl
-                    .bind_buffer(glow::PARAMETER_BUFFER, Some(buf));
+                self.gl.bind_buffer(glow::PARAMETER_BUFFER, Some(buf));
                 self.gl.buffer_data_u8_slice(
                     glow::PARAMETER_BUFFER,
                     bytemuck::cast_slice(&[count]),
@@ -125,34 +139,71 @@ impl IndirectBuffer {
     /// # Arguments
     /// * `strategy`     — Which MDI entry point to use.
     /// * `element_type` — Index type (e.g. `glow::UNSIGNED_INT`).
-    /// * `cmd_offset`   — Byte offset into the uploaded command buffer.
+    /// * `cmd_offset`   — Byte offset into the uploaded command buffer where
+    ///                     the first command to dispatch lives.
     /// * `cmd_count`    — Number of commands to dispatch.
-    /// * `max_count`    — Maximum commands for MultiCount (ignored by other strategies).
+    /// * `max_count`    — Upper bound for MultiCount (ignored by Single/Multi).
     pub fn dispatch(
         &self,
         strategy: MdiStrategy,
         element_type: u32,
         cmd_offset: usize,
         cmd_count: usize,
-        _max_count: u32,
+        max_count: u32,
     ) {
-        let stride = std::mem::size_of::<DrawElementsIndirectCommand>() as i32;
+        let cmd_stride = std::mem::size_of::<DrawElementsIndirectCommand>();
 
         unsafe {
             self.gl
                 .bind_buffer(glow::DRAW_INDIRECT_BUFFER, Some(self.cmd_buffer));
 
             match strategy {
-                MdiStrategy::Single | MdiStrategy::Multi | MdiStrategy::MultiCount => {
-                    // Since glow does not expose multi_draw_elements_indirect or
-                    // multi_draw_elements_indirect_count directly in all profiles/backends,
-                    // we emulate it by loop-dispatching individual indirect draw calls.
+                MdiStrategy::Single => {
+                    // One GL call per command — each shows up individually in a frame capture.
+                    // This is semantically identical to Multi but easier to debug.
                     for i in 0..cmd_count {
-                        let offset = cmd_offset + i * stride as usize;
+                        let byte_offset = (cmd_offset + i * cmd_stride) as i32;
                         self.gl.draw_elements_indirect_offset(
                             glow::TRIANGLES,
                             element_type,
-                            offset as i32,
+                            byte_offset,
+                        );
+                    }
+                }
+
+                MdiStrategy::Multi => {
+                    // Emulated batch: loop through all commands in the buffer.
+                    // When glow exposes multi_draw_elements_indirect this becomes a
+                    // single-line replacement:
+                    //   self.gl.multi_draw_elements_indirect(
+                    //       glow::TRIANGLES, element_type,
+                    //       cmd_offset as i32, cmd_count as i32, cmd_stride as i32);
+                    for i in 0..cmd_count {
+                        let byte_offset = (cmd_offset + i * cmd_stride) as i32;
+                        self.gl.draw_elements_indirect_offset(
+                            glow::TRIANGLES,
+                            element_type,
+                            byte_offset,
+                        );
+                    }
+                }
+
+                MdiStrategy::MultiCount => {
+                    // Same loop as Multi, but the count buffer is already bound by
+                    // upload_count(). When glow exposes the GL 4.6 count variant:
+                    //   self.gl.multi_draw_elements_indirect_count(
+                    //       glow::TRIANGLES, element_type,
+                    //       cmd_offset as i32, 0, max_count as i32, cmd_stride as i32);
+                    let _ = max_count; // suppress unused warning until the real call lands
+                    if let Some(buf) = self.count_buffer {
+                        self.gl.bind_buffer(glow::PARAMETER_BUFFER, Some(buf));
+                    }
+                    for i in 0..cmd_count {
+                        let byte_offset = (cmd_offset + i * cmd_stride) as i32;
+                        self.gl.draw_elements_indirect_offset(
+                            glow::TRIANGLES,
+                            element_type,
+                            byte_offset,
                         );
                     }
                 }

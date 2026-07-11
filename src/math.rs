@@ -1,5 +1,5 @@
 // src/renderer/math.rs
-use glam::camera::rh::proj::opengl::perspective;
+use glam::camera::rh::{proj::opengl::perspective, view::look_to_mat4};
 use glam::{Mat4, Quat, Vec3};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -10,7 +10,6 @@ pub struct HashableF32(pub f32);
 
 impl PartialEq for HashableF32 {
     fn eq(&self, other: &Self) -> bool {
-        // Fallback to bit representation to avoid NaN != NaN issues when hashing
         self.0.to_bits() == other.0.to_bits()
     }
 }
@@ -64,13 +63,28 @@ pub fn transform_to_model_matrix(transform: &Transform) -> Mat4 {
     Mat4::from_scale_rotation_translation(transform.scale, transform.rotation, transform.position)
 }
 
-// The renderer calls these directly using data from FrameData
+/// Builds a right-handed view matrix from a camera position and orientation quaternion.
+///
+/// Derives the forward (-Z in camera local space) and up (+Y) vectors from the
+/// quaternion and delegates to `glam::camera::rh::view::look_to_mat4`, which is
+/// the non-deprecated path in glam 0.33 for this operation.
 pub fn camera_to_view_matrix(position: Vec3, rotation: Quat) -> Mat4 {
-    let translation = Mat4::from_translation(-position);
-    let rotation = Mat4::from_quat(rotation.conjugate());
-    rotation * translation
+    let forward = rotation * Vec3::NEG_Z;
+    let up = rotation * Vec3::Y;
+    look_to_mat4(position, forward, up)
 }
 
+/// Builds a right-handed OpenGL perspective projection matrix.
+///
+/// Uses `glam::camera::rh::proj::opengl::perspective` which maps depth to [-1, 1]
+/// (OpenGL NDC). Do NOT use `Mat4::perspective_rh` here — that maps to [0, 1]
+/// (Vulkan/Metal/DX12 NDC) and will make the entire scene invisible.
+///
+/// # Arguments
+/// * `fov`          — Vertical field of view in radians.
+/// * `aspect_ratio` — Width / height.
+/// * `near`         — Near clip plane (must be > 0).
+/// * `far`          — Far clip plane (must be > near).
 pub fn camera_to_projection_matrix(fov: f32, aspect_ratio: f32, near: f32, far: f32) -> Mat4 {
     perspective(fov, aspect_ratio, near, far)
 }
