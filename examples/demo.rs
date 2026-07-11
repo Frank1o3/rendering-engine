@@ -28,7 +28,8 @@ use rendering_engine::{
     mesh::{MeshData, Vertex},
     pipeline::PipelineState,
     scene::ObjectKind,
-    triple_buffer::{WriteHandle, new_triple_buffer},
+    triple_buffer::{ReadHandle, WriteHandle, new_triple_buffer},
+    MdiStrategy,
 };
 
 // ==========================================
@@ -290,7 +291,7 @@ impl ApplicationHandler for DemoApp {
         let mut renderer = Renderer::new(gl, read_handle);
 
         // Set Multi Draw Indirect Protocol
-        renderer.set_mdi_strategy(rendering_engine::MdiStrategy::Multi);
+        renderer.set_mdi_strategy(MdiStrategy::Multi);
 
         // Load Assets
         let mesh_id = renderer.load_mesh(create_cube_mesh());

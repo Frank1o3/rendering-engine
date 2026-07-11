@@ -1,4 +1,3 @@
-```
 # Compiled and build artifacts
 *.o
 *.obj
@@ -8,6 +7,7 @@
 *.a
 *.out
 target/
+**/*.rs.bk
 
 # Dependencies
 **/node_modules/
@@ -34,12 +34,9 @@ target/
 # Editors
 .vscode/
 .idea/
-*.swp
-*.swo
 
 # Build and distribution
 dist/
 build/
 *.pyc
 *.class
-```
