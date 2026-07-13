@@ -343,4 +343,4 @@ Files indexed: 16
 
 ### `.gitignore`
 
-**Purpose:** Gitignore file to exclude unnecessary files from version control
+**Purpose:** Git ignore file for compiled artifacts, dependencies, logs, and editor files
