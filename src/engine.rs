@@ -522,4 +522,29 @@ impl Renderer {
 
         self.current_pipeline_id = Some(requested_id);
     }
+
+    /// Binds the given shader and sets a named vec3 uniform.
+    /// Returns false if the uniform doesn't exist (not an error in GLSL).
+    pub fn upload_shader_vec3(&mut self, shader_id: ShaderId, name: &str, v: glam::Vec3) -> bool {
+        if let Some(shader) = self.shaders.get(&shader_id) {
+            unsafe {
+                self.gl.use_program(Some(shader.program));
+            }
+            shader.set_vec3(name, v)
+        } else {
+            false
+        }
+    }
+
+    /// Binds the given shader and sets a named f32 uniform.
+    pub fn upload_shader_f32(&mut self, shader_id: ShaderId, name: &str, v: f32) -> bool {
+        if let Some(shader) = self.shaders.get(&shader_id) {
+            unsafe {
+                self.gl.use_program(Some(shader.program));
+            }
+            shader.set_f32(name, v)
+        } else {
+            false
+        }
+    }
 }
