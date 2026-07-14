@@ -306,9 +306,9 @@ impl ApplicationHandler for DemoApp {
 
         // ── Window + GL context ──────────────────────────────────────────────
         let window_attributes = Window::default_attributes()
-            .with_title("Rendering Engine Demo  |  1:Lit  2:Wire  3:Flat  |  WASD+Mouse")
+            .with_title("Rendering Engine 3D Demo")
             .with_inner_size(PhysicalSize::new(1280u32, 720u32))
-            .with_resizable(true);
+            .with_resizable(false);
 
         let display_builder = DisplayBuilder::new().with_window_attributes(Some(window_attributes));
 
@@ -905,7 +905,7 @@ fn main() {
     let template = ConfigTemplateBuilder::new()
         .with_alpha_size(8)
         .with_depth_size(24)
-        .with_transparency(false);
+        .with_transparency(true);
 
     let mut app = DemoApp::new(template);
     event_loop.run_app(&mut app).expect("Event loop failed");
