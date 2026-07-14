@@ -29,7 +29,7 @@ use rendering_engine::{
     mesh::{MeshData, Vertex},
     pipeline::PipelineState,
     scene::ObjectKind,
-    triple_buffer::{ReadHandle, WriteHandle, new_triple_buffer},
+    triple_buffer::{WriteHandle, new_triple_buffer},
 };
 
 // ==========================================
@@ -141,6 +141,14 @@ fn create_cube_mesh() -> MeshData {
         [-0.5, 0.5, 0.5],
         [-0.5, 0.5, -0.5],
     ];
+    let face_normals = [
+        [0, 0, 127, 0],  // Front (+Z)
+        [0, 0, -127, 0], // Back (-Z)
+        [0, 127, 0, 0],  // Top (+Y)
+        [0, -127, 0, 0], // Bottom (-Y)
+        [127, 0, 0, 0],  // Right (+X)
+        [-127, 0, 0, 0], // Left (-X)
+    ];
 
     let colors = [
         [255, 0, 0, 255],   // Red
@@ -156,6 +164,7 @@ fn create_cube_mesh() -> MeshData {
         for &pos in face {
             vertices.push(Vertex {
                 position: pos,
+                normal: face_normals[i],
                 color: colors[i],
             });
         }
@@ -176,21 +185,27 @@ fn create_cube_mesh() -> MeshData {
 
 // A simple 1x1 white quad for UI rendering
 fn create_quad_mesh() -> MeshData {
+    const QUAD_NORMAL: [i8; 4] = [0, 0, 127, 0];
+
     let vertices = vec![
         Vertex {
             position: [0.0, 0.0, 0.0],
+            normal: QUAD_NORMAL,
             color: [255, 255, 255, 255],
         },
         Vertex {
             position: [1.0, 0.0, 0.0],
+            normal: QUAD_NORMAL,
             color: [255, 255, 255, 255],
         },
         Vertex {
             position: [1.0, 1.0, 0.0],
+            normal: QUAD_NORMAL,
             color: [255, 255, 255, 255],
         },
         Vertex {
             position: [0.0, 1.0, 0.0],
+            normal: QUAD_NORMAL,
             color: [255, 255, 255, 255],
         },
     ];
