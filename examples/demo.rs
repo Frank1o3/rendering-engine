@@ -156,65 +156,74 @@ impl DemoApp {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn create_cube_mesh() -> MeshData {
-    // 24 vertices (4 per face) — distinct face normals and colors.
-    // Normals are set to face direction; compute_normals() is NOT called
-    // because we want hard-edge shading (each face has its own normal).
-    let faces: &[([f32; 3], [f32; 3], [u8; 4])] = &[
-        // (face-centre normal, face-centre offset, color)
-        ([0.0, 0.0, 1.0], [0.0, 0.0, 0.5], [220, 60, 60, 255]), // Front  red
-        ([0.0, 0.0, -1.0], [0.0, 0.0, -0.5], [60, 180, 60, 255]), // Back   green
-        ([0.0, 1.0, 0.0], [0.0, 0.5, 0.0], [60, 60, 220, 255]), // Top    blue
-        ([0.0, -1.0, 0.0], [0.0, -0.5, 0.0], [220, 180, 40, 255]), // Bottom yellow
-        ([1.0, 0.0, 0.0], [0.5, 0.0, 0.0], [180, 60, 220, 255]), // Right  magenta
-        ([-1.0, 0.0, 0.0], [-0.5, 0.0, 0.0], [40, 200, 220, 255]), // Left   cyan
-    ];
+    // Each face: 4 vertices wound CCW when viewed from outside.
+    // Positions are on the unit cube [-0.5, 0.5].
+    // Normals are explicit per-face (hard edges, not averaged).
+    // Using Vertex::new() which calls pack_normal() internally.
 
-    // Quad winding order (CCW when viewed from outside):
-    //   3──2
-    //   │  │
-    //   0──1
-    // We'll construct each quad from two right-hand tangent vectors.
+    let r = [220u8, 60, 60, 255]; // red    — front  +Z
+    let g = [60u8, 200, 60, 255]; // green  — back   -Z
+    let b = [60u8, 60, 220, 255]; // blue   — top    +Y
+    let y = [220u8, 200, 40, 255]; // yellow — bottom -Y
+    let m = [180u8, 60, 220, 255]; // purple — right  +X
+    let c = [40u8, 200, 220, 255]; // cyan   — left   -X
 
-    let mut vertices = Vec::with_capacity(24);
+    let mut v = Vec::with_capacity(24);
+
+    // Front face (+Z), normal = (0, 0, 1)
+    // Viewed from +Z looking in: CCW = BL, BR, TR, TL
+    v.push(Vertex::new([-0.5, -0.5, 0.5], [0.0, 0.0, 1.0], r));
+    v.push(Vertex::new([0.5, -0.5, 0.5], [0.0, 0.0, 1.0], r));
+    v.push(Vertex::new([0.5, 0.5, 0.5], [0.0, 0.0, 1.0], r));
+    v.push(Vertex::new([-0.5, 0.5, 0.5], [0.0, 0.0, 1.0], r));
+
+    // Back face (-Z), normal = (0, 0, -1)
+    // Viewed from -Z looking in: CCW = BR, BL, TL, TR
+    v.push(Vertex::new([0.5, -0.5, -0.5], [0.0, 0.0, -1.0], g));
+    v.push(Vertex::new([-0.5, -0.5, -0.5], [0.0, 0.0, -1.0], g));
+    v.push(Vertex::new([-0.5, 0.5, -0.5], [0.0, 0.0, -1.0], g));
+    v.push(Vertex::new([0.5, 0.5, -0.5], [0.0, 0.0, -1.0], g));
+
+    // Top face (+Y), normal = (0, 1, 0)
+    // Viewed from +Y looking down: CCW = BL, BR, TR, TL (in XZ plane)
+    v.push(Vertex::new([-0.5, 0.5, 0.5], [0.0, 1.0, 0.0], b));
+    v.push(Vertex::new([0.5, 0.5, 0.5], [0.0, 1.0, 0.0], b));
+    v.push(Vertex::new([0.5, 0.5, -0.5], [0.0, 1.0, 0.0], b));
+    v.push(Vertex::new([-0.5, 0.5, -0.5], [0.0, 1.0, 0.0], b));
+
+    // Bottom face (-Y), normal = (0, -1, 0)
+    // Viewed from -Y looking up: CCW = BL, BR, TR, TL
+    v.push(Vertex::new([-0.5, -0.5, -0.5], [0.0, -1.0, 0.0], y));
+    v.push(Vertex::new([0.5, -0.5, -0.5], [0.0, -1.0, 0.0], y));
+    v.push(Vertex::new([0.5, -0.5, 0.5], [0.0, -1.0, 0.0], y));
+    v.push(Vertex::new([-0.5, -0.5, 0.5], [0.0, -1.0, 0.0], y));
+
+    // Right face (+X), normal = (1, 0, 0)
+    // Viewed from +X looking left: CCW = BL, BR, TR, TL (in ZY plane)
+    v.push(Vertex::new([0.5, -0.5, 0.5], [1.0, 0.0, 0.0], m));
+    v.push(Vertex::new([0.5, -0.5, -0.5], [1.0, 0.0, 0.0], m));
+    v.push(Vertex::new([0.5, 0.5, -0.5], [1.0, 0.0, 0.0], m));
+    v.push(Vertex::new([0.5, 0.5, 0.5], [1.0, 0.0, 0.0], m));
+
+    // Left face (-X), normal = (-1, 0, 0)
+    // Viewed from -X looking right: CCW = BL, BR, TR, TL
+    v.push(Vertex::new([-0.5, -0.5, -0.5], [-1.0, 0.0, 0.0], c));
+    v.push(Vertex::new([-0.5, -0.5, 0.5], [-1.0, 0.0, 0.0], c));
+    v.push(Vertex::new([-0.5, 0.5, 0.5], [-1.0, 0.0, 0.0], c));
+    v.push(Vertex::new([-0.5, 0.5, -0.5], [-1.0, 0.0, 0.0], c));
+
+    // Indices: two CCW triangles per face (0,1,2), (2,3,0)
+    // This pattern is correct for CCW quads: splits the quad along the 0-2 diagonal
     let mut indices = Vec::with_capacity(36);
-
-    for (fi, &(normal, _centre, color)) in faces.iter().enumerate() {
-        let n = Vec3::from(normal);
-        // Pick tangent / bitangent for each face
-        let (t, b) = perp_tangents(n);
-        let base = (fi * 4) as u32;
-
-        // 4 corners: -t-b, +t-b, +t+b, -t+b
-        let corners = [(-t - b) * 0.5, (t - b) * 0.5, (t + b) * 0.5, (-t + b) * 0.5];
-        for c in corners {
-            vertices.push(Vertex {
-                position: c.to_array(),
-                normal: pack_normal_f32(n.to_array()),
-                color,
-            });
-        }
-        // Two CCW triangles
-        indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 3, base]);
+    for face in 0..6u32 {
+        let b = face * 4;
+        indices.extend_from_slice(&[b, b + 1, b + 2, b + 2, b + 3, b]);
     }
 
-    MeshData { vertices, indices }
-}
-
-fn perp_tangents(n: Vec3) -> (Vec3, Vec3) {
-    // Build an orthonormal frame for a face with normal n.
-    let up = if n.abs().dot(Vec3::Y) < 0.9 {
-        Vec3::Y
-    } else {
-        Vec3::Z
-    };
-    let t = n.cross(up).normalize();
-    let b = n.cross(t);
-    (t, b)
-}
-
-fn pack_normal_f32(n: [f32; 3]) -> [i8; 4] {
-    let c = |v: f32| (v.clamp(-1.0, 1.0) * 127.0).round() as i8;
-    [c(n[0]), c(n[1]), c(n[2]), 0]
+    MeshData {
+        vertices: v,
+        indices,
+    }
 }
 
 fn create_quad_mesh() -> MeshData {
@@ -394,7 +403,7 @@ impl ApplicationHandler for DemoApp {
         // ── Materials ────────────────────────────────────────────────────────
         let mat_lit =
             renderer.create_material(shader_lit, PipelineState::default_opaque(shader_lit.0));
-
+2;
         let mat_wireframe = renderer.create_material(
             shader_wireframe,
             PipelineState::default_opaque(shader_wireframe.0),
@@ -416,7 +425,7 @@ impl ApplicationHandler for DemoApp {
         let ui_material_id = renderer.create_material(shader_ui, ui_pipeline);
 
         // ── Grid positions ───────────────────────────────────────────────────
-        const GRID: i32 = 50;
+        const GRID: i32 = 25;
         const GAP: f32 = 1.1;
 
         let mut grid_positions = Vec::with_capacity(((GRID * 2 + 1) * (GRID * 2 + 1)) as usize);

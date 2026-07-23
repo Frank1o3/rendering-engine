@@ -89,24 +89,28 @@ pub fn camera_to_projection_matrix(fov: f32, aspect: f32, near: f32, far: f32) -
 ///
 /// Plane order: [left, right, bottom, top, near, far].
 pub fn extract_frustum_planes(vp: Mat4) -> [Vec4; 6] {
-    // glam stores matrices column-major.  Row i is the i-th row of the matrix.
-    // The Gribb/Hartmann method reads rows of the transposed matrix.
     let m = vp.transpose();
-    let col = |i: usize| m.col(i); // after transpose, col(i) == original row i
+    let col = |i: usize| m.col(i);
 
     let row0 = col(0);
     let row1 = col(1);
     let row2 = col(2);
     let row3 = col(3);
 
-    [
+    let planes = [
         row3 + row0, // left
         row3 - row0, // right
         row3 + row1, // bottom
         row3 - row1, // top
         row3 + row2, // near
         row3 - row2, // far
-    ]
+    ];
+
+    // Normalise each plane so sphere_inside_frustum gets exact signed distances.
+    planes.map(|p| {
+        let len = Vec3::new(p.x, p.y, p.z).length();
+        p / len
+    })
 }
 
 /// Returns `true` if a sphere is fully or partially inside (or intersects)
@@ -119,11 +123,8 @@ pub fn extract_frustum_planes(vp: Mat4) -> [Vec4; 6] {
 #[inline]
 pub fn sphere_inside_frustum(center: Vec3, radius: f32, planes: &[Vec4; 6]) -> bool {
     for plane in planes {
-        // Length of the xyz part of the (unnormalised) plane normal.
-        let len = Vec3::new(plane.x, plane.y, plane.z).length();
-        // Signed distance from the sphere centre to the plane.
-        let dist = (plane.x * center.x + plane.y * center.y + plane.z * center.z + plane.w) / len;
-        // If the sphere is entirely on the negative (outside) side, cull it.
+        // Planes are pre-normalised so this is an exact signed distance.
+        let dist = plane.x * center.x + plane.y * center.y + plane.z * center.z + plane.w;
         if dist < -radius {
             return false;
         }

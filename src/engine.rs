@@ -386,10 +386,17 @@ impl Renderer {
             if let Some(planes) = frustum {
                 let mesh = self.meshes.get(&inst.mesh_id).expect("Mesh ID not found");
                 let center = glam::Vec3::from(inst.instance.position);
-                let radius = mesh.bounding_radius * inst.instance.scale;
+                let radius = mesh.bounding_radius * inst.instance.scale + 0.5; // bias
 
                 if !sphere_inside_frustum(center, radius, planes) {
-                    continue; // skip — entirely outside the frustum
+                    // Log the first few culled objects each frame to see their distances
+                    log::debug!(
+                        "CULLED: center={:.2?} radius={:.3} distances={:.3?}",
+                        center.to_array(),
+                        radius,
+                        planes.map(|p| p.x * center.x + p.y * center.y + p.z * center.z + p.w)
+                    );
+                    continue;
                 }
             }
 
@@ -402,6 +409,13 @@ impl Renderer {
         let actual = transform_offset - start_offset;
         if actual == 0 {
             return transform_offset;
+        }
+
+        // Ensure all CPU writes to the persistent mapped buffer are visible
+        // to subsequent GPU draw calls before we start issuing them.
+        unsafe {
+            self.gl
+                .memory_barrier(glow::CLIENT_MAPPED_BUFFER_BARRIER_BIT);
         }
 
         unsafe {

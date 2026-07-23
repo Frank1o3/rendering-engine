@@ -111,6 +111,7 @@ impl MeshData {
                 p.length()
             })
             .fold(0.0_f32, f32::max)
+            * 1.05 // 5% padding — eliminates edge popping without over-culling
     }
 }
 
