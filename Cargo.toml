@@ -2,3 +2,16 @@
 [workspace]
     members=["demo", "engine"]
     resolver="2"
+
+    [workspace.package]
+        edition="2024"
+        license="BSD-3-Clause"
+        version="0.1.0"
+
+    [workspace.dependencies]
+        anyhow="1.0.104"
+        bytemuck={version="1.25.2", features=["derive"]}
+        glam={version="0.33.2", features=["bytemuck"]}
+        glow="0.18.0"
+        include_dir="0.7.4"
+        log="0.4.33"
