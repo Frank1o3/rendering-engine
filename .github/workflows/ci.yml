@@ -13,7 +13,7 @@ jobs:
             ANDROID_NDK_VERSION: 26.3.11579264
 
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
 
             - uses: dtolnay/rust-toolchain@stable
               with:
@@ -21,7 +21,7 @@ jobs:
                       aarch64-linux-android
                       armv7-linux-androideabi
 
-            - uses: android-actions/setup-android@v3
+            - uses: android-actions/setup-android@v4
 
             - name: Install NDK
               run: sdkmanager "ndk;$ANDROID_NDK_VERSION"
@@ -37,7 +37,10 @@ jobs:
             - name: Build APK
               run: cargo apk build -p android-demo
 
-            - uses: actions/upload-artifact@v4
+            - name: Upload APK
+              uses: actions/upload-artifact@v7
               with:
-                  name: android-demo-apk
-                  path: target/apk/**/*.apk
+                  name: android-demo
+                  path: |
+                      target/debug/apk/*.apk
+                      target/release/apk/*.apk
