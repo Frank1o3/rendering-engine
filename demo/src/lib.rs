@@ -15,7 +15,7 @@ mod android {
 
     use crate::app::App;
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub fn android_main(app: winit::platform::android::activity::AndroidApp) {
         let event_loop = EventLoop::builder().with_android_app(app).build().unwrap();
 
