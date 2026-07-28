@@ -35,7 +35,7 @@ jobs:
               run: cargo install cargo-apk
 
             - name: Build APK
-              run: cargo apk build -p demo
+              run: cargo apk build -p demo --lib
 
             - name: Upload APK
               uses: actions/upload-artifact@v7
