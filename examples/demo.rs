@@ -403,7 +403,7 @@ impl ApplicationHandler for DemoApp {
         // ── Materials ────────────────────────────────────────────────────────
         let mat_lit =
             renderer.create_material(shader_lit, PipelineState::default_opaque(shader_lit.0));
-2;
+        2;
         let mat_wireframe = renderer.create_material(
             shader_wireframe,
             PipelineState::default_opaque(shader_wireframe.0),
@@ -426,7 +426,7 @@ impl ApplicationHandler for DemoApp {
 
         // ── Grid positions ───────────────────────────────────────────────────
         const GRID: i32 = 25;
-        const GAP: f32 = 1.1;
+        const GAP: f32 = 1.0;
 
         let mut grid_positions = Vec::with_capacity(((GRID * 2 + 1) * (GRID * 2 + 1)) as usize);
         for x in -GRID..=GRID {

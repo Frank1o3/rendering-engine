@@ -19,6 +19,16 @@ use std::sync::Arc;
 
 const MAX_OBJECTS: usize = 65536;
 
+/// Number of independently-fenced regions in the persistent-mapped transform
+/// buffer. Each frame writes into one region while up to `TRANSFORM_REGIONS - 1`
+/// prior frames' regions may still be in flight on the GPU. Without this, the
+/// CPU can start overwriting slot data that a still-executing indirect draw
+/// call from a previous frame is reading, producing a torn transform for one
+/// frame — visible as an object briefly rendering in the wrong place / getting
+/// culled, especially when camera movement changes which objects occupy which
+/// slots frame-to-frame.
+const TRANSFORM_REGIONS: usize = 3;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Pod, Zeroable)]
 #[repr(transparent)]
 pub struct MeshId(pub u32);
@@ -64,6 +74,11 @@ pub struct Renderer {
     /// Most recently consumed frame. Re-rendered when the producer is silent.
     last_frame: FrameData,
     has_frame: bool,
+
+    /// Fence placed after the last frame that wrote+drew from each transform
+    /// region. `None` until that region has been used at least once.
+    region_fences: [Option<glow::Fence>; TRANSFORM_REGIONS],
+    frame_index: u64,
 }
 
 impl Renderer {
@@ -79,7 +94,7 @@ impl Renderer {
 
         let transform_buffer = PersistentMappedBuffer::new(
             gl.clone(),
-            MAX_OBJECTS * std::mem::size_of::<InstanceData>(),
+            MAX_OBJECTS * TRANSFORM_REGIONS * std::mem::size_of::<InstanceData>(),
         );
 
         let geometry_pool = GeometryPool::new(gl.clone(), transform_buffer.handle);
@@ -107,10 +122,15 @@ impl Renderer {
             current_pipeline_id: None,
             last_frame: FrameData::default(),
             has_frame: false,
+            region_fences: [None; TRANSFORM_REGIONS],
+            frame_index: 0,
         }
     }
 
     // ── Scene delegation API ─────────────────────────────────────────────────
+    // (unchanged — add_object, remove_object, set_transform, set_position,
+    //  set_position_rotation, set_mdi_strategy, load_mesh, load_shader,
+    //  load_shader_from_files, load_shaders_from_dir, create_material, resize)
 
     pub fn add_object(
         &mut self,
@@ -146,8 +166,6 @@ impl Renderer {
     pub fn set_mdi_strategy(&mut self, strategy: MdiStrategy) {
         self.mdi_strategy = strategy;
     }
-
-    // ── Asset loading ─────────────────────────────────────────────────────────
 
     pub fn load_mesh(&mut self, mut data: MeshData) -> MeshId {
         let radius = data.bounding_radius();
@@ -190,8 +208,6 @@ impl Renderer {
         Ok(id)
     }
 
-    /// Scan a directory for `<name>.vert` / `<name>.frag` pairs.
-    /// An optional `<name>.geom` is loaded automatically if present.
     pub fn load_shaders_from_dir(
         &mut self,
         dir: &Path,
@@ -269,6 +285,55 @@ impl Renderer {
         }
     }
 
+    // ── Transform-region synchronization ────────────────────────────────────
+
+    /// Blocks the CPU until the GPU has finished reading whatever data was
+    /// last written into `region` (if anything). Must be called before any
+    /// `write_instance` calls target that region this frame.
+    fn wait_for_region(&mut self, region: usize) {
+        let Some(fence) = self.region_fences[region].take() else {
+            return; // Region hasn't been used yet — nothing to wait on.
+        };
+        unsafe {
+            // 1s safety timeout, re-issued in a loop. In steady state this
+            // should return ALREADY_SIGNALED or CONDITION_SATISFIED almost
+            // immediately — the GPU is rarely more than a frame or two behind.
+            const TIMEOUT_NS: i32 = 1_000_000_000;
+            loop {
+                let status =
+                    self.gl
+                        .client_wait_sync(fence, glow::SYNC_FLUSH_COMMANDS_BIT, TIMEOUT_NS);
+                match status {
+                    glow::ALREADY_SIGNALED | glow::CONDITION_SATISFIED => break,
+                    glow::TIMEOUT_EXPIRED => {
+                        log::warn!(
+                            "GPU still busy with transform region {} after 1s — waiting again",
+                            region
+                        );
+                        continue;
+                    }
+                    glow::WAIT_FAILED => {
+                        log::error!("client_wait_sync failed for transform region {}", region);
+                        break;
+                    }
+                    _ => break,
+                }
+            }
+            self.gl.delete_sync(fence);
+        }
+    }
+
+    /// Places a fence after all draws that read from `region` this frame, so
+    /// a future `wait_for_region` call knows when it's safe to reuse it.
+    fn fence_region(&mut self, region: usize) {
+        unsafe {
+            match self.gl.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0) {
+                Ok(fence) => self.region_fences[region] = Some(fence),
+                Err(e) => log::error!("fence_sync failed: {}", e),
+            }
+        }
+    }
+
     // ── Render ───────────────────────────────────────────────────────────────
 
     /// Main render entry point.
@@ -291,6 +356,13 @@ impl Renderer {
             return;
         }
 
+        // Pick this frame's transform-buffer region and make sure the GPU is
+        // done with whatever was last written there before we touch it.
+        let region = (self.frame_index % TRANSFORM_REGIONS as u64) as usize;
+        self.wait_for_region(region);
+        let region_base = region * MAX_OBJECTS;
+        let region_limit = region_base + MAX_OBJECTS;
+
         self.current_pipeline_id = None;
 
         // ── PASS 1: 3D scene (perspective + frustum culling) ─────────────────
@@ -306,13 +378,11 @@ impl Renderer {
         );
         let vp = proj * view;
 
-        // Extract frustum planes from the VP matrix for CPU-side sphere tests.
         let frustum = math::extract_frustum_planes(vp);
 
         self.scene.flush_dirty();
         self.scene.collect_sorted_into(&mut self.sorted_instances);
 
-        // Dynamic commands from the triple buffer are appended after scene objects.
         let dynamic_commands_exist = !self.last_frame.commands.is_empty();
         for cmd in &self.last_frame.commands {
             self.sorted_instances.push(SortedInstance {
@@ -326,8 +396,9 @@ impl Renderer {
                 .sort_unstable_by_key(|o| (o.material_id, o.mesh_id));
         }
 
-        let mut transform_offset = 0;
-        transform_offset = self.render_instances(&vp, transform_offset, Some(&frustum));
+        let mut transform_offset = region_base;
+        transform_offset =
+            self.render_instances(&vp, transform_offset, region_limit, Some(&frustum));
 
         // ── PASS 2: UI overlay (orthographic, no frustum culling) ────────────
         if !self.last_frame.ui_commands.is_empty() {
@@ -347,19 +418,28 @@ impl Renderer {
             self.sorted_instances
                 .sort_unstable_by_key(|o| (o.material_id, o.mesh_id));
 
-            // UI elements are 2-D overlays — no 3-D frustum culling.
-            self.render_instances(&ui_proj, transform_offset, None);
+            self.render_instances(&ui_proj, transform_offset, region_limit, None);
         }
+
+        // All draws that read this region have now been issued — fence it so
+        // the wait 3 frames from now knows when it's safe to overwrite again.
+        self.fence_region(region);
+        self.frame_index = self.frame_index.wrapping_add(1);
     }
 
     /// Writes instances into the transform buffer and issues draw calls,
     /// optionally skipping objects whose bounding sphere is outside the frustum.
+    ///
+    /// `region_limit` is the exclusive upper bound of the current transform
+    /// region — replaces the old bare `MAX_OBJECTS` check now that the buffer
+    /// holds `TRANSFORM_REGIONS` regions back-to-back.
     ///
     /// Returns the next free slot in the transform buffer.
     fn render_instances(
         &mut self,
         vp: &glam::Mat4,
         mut transform_offset: usize,
+        region_limit: usize,
         frustum: Option<&[Vec4; 6]>,
     ) -> usize {
         if self.sorted_instances.is_empty() {
@@ -369,27 +449,22 @@ impl Renderer {
         let start_offset = transform_offset;
         let total = self.sorted_instances.len();
 
-        // Build a compact list of (sorted_instances index → transform slot)
-        // after frustum culling.  We can't reuse sorted_instances in-place
-        // because it would mess up the group boundaries computed below.
         let mut visible_indices: Vec<usize> = Vec::with_capacity(total);
 
         for i in 0..total {
-            if transform_offset >= MAX_OBJECTS {
+            if transform_offset >= region_limit {
                 log::warn!("Max transform capacity ({}) exceeded", MAX_OBJECTS);
                 break;
             }
 
             let inst = &self.sorted_instances[i];
 
-            // ── CPU frustum cull ──────────────────────────────────────────────
             if let Some(planes) = frustum {
                 let mesh = self.meshes.get(&inst.mesh_id).expect("Mesh ID not found");
                 let center = glam::Vec3::from(inst.instance.position);
-                let radius = mesh.bounding_radius * inst.instance.scale + 0.5; // bias
+                let radius = mesh.bounding_radius * inst.instance.scale + 0.5;
 
                 if !sphere_inside_frustum(center, radius, planes) {
-                    // Log the first few culled objects each frame to see their distances
                     log::debug!(
                         "CULLED: center={:.2?} radius={:.3} distances={:.3?}",
                         center.to_array(),
@@ -411,8 +486,6 @@ impl Renderer {
             return transform_offset;
         }
 
-        // Ensure all CPU writes to the persistent mapped buffer are visible
-        // to subsequent GPU draw calls before we start issuing them.
         unsafe {
             self.gl
                 .memory_barrier(glow::CLIENT_MAPPED_BUFFER_BARRIER_BIT);
@@ -422,13 +495,12 @@ impl Renderer {
             self.gl.bind_vertex_array(Some(self.geometry_pool.vao));
         }
 
-        let mut vi = 0; // cursor into visible_indices
+        let mut vi = 0;
         while vi < actual {
             let first_si = visible_indices[vi];
             let mat_id = self.sorted_instances[first_si].material_id;
             let mesh_id = self.sorted_instances[first_si].mesh_id;
 
-            // Grow the group as long as material AND mesh match.
             let mut group_end = vi + 1;
             while group_end < actual {
                 let si = visible_indices[group_end];
@@ -520,9 +592,6 @@ impl Renderer {
                 self.gl.disable(glow::DEPTH_TEST);
             }
 
-            // depth_mask must always be applied — it is NOT skipped by the cache
-            // because render() resets it to true before clearing, so on re-entry
-            // the pipeline's value would be stale if we relied on the cached ID.
             self.gl.depth_mask(pipeline.depth_write);
 
             if pipeline.blend_enabled {
@@ -537,8 +606,6 @@ impl Renderer {
         self.current_pipeline_id = Some(requested_id);
     }
 
-    /// Binds the given shader and sets a named vec3 uniform.
-    /// Returns false if the uniform doesn't exist (not an error in GLSL).
     pub fn upload_shader_vec3(&mut self, shader_id: ShaderId, name: &str, v: glam::Vec3) -> bool {
         if let Some(shader) = self.shaders.get(&shader_id) {
             unsafe {
@@ -550,7 +617,6 @@ impl Renderer {
         }
     }
 
-    /// Binds the given shader and sets a named f32 uniform.
     pub fn upload_shader_f32(&mut self, shader_id: ShaderId, name: &str, v: f32) -> bool {
         if let Some(shader) = self.shaders.get(&shader_id) {
             unsafe {
@@ -559,6 +625,16 @@ impl Renderer {
             shader.set_f32(name, v)
         } else {
             false
+        }
+    }
+}
+
+impl Drop for Renderer {
+    fn drop(&mut self) {
+        unsafe {
+            for fence in self.region_fences.iter().flatten() {
+                self.gl.delete_sync(*fence);
+            }
         }
     }
 }
