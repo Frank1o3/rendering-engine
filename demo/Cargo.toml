@@ -1,10 +1,14 @@
 [package]
     edition="2024"
-    name="android-demo"
+    name="demo"
     version="0.1.0"
 
 [lib]
-    crate-type=["cdylib"]
+    crate-type=["cdylib", "rlib"]
+
+[[bin]]
+    name="desktop"
+    path="src/bin/desktop.rs"
 
 [dependencies]
     anyhow="1.0.104"
@@ -16,16 +20,20 @@
     glutin-winit="0.5.0"
     include_dir="0.7.4"
     log="0.4.33"
+    rand="0.10.2"
     raw-window-handle="0.6.2"
     rendering-engine={path="../engine"}
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+    winit="0.30.13"
+
+[target.'cfg(target_os = "android")'.dependencies]
     winit={version="0.30.13", features=["android-native-activity"]}
 
     [package.metadata.android]
-        package="com.frank1o3.renderingengine"
-
         build_targets=["aarch64-linux-android", "armv7-linux-androideabi"]
-
         label="Rendering Engine Demo"
+        package="com.frank1o3.renderingengine"
 
         [package.metadata.android.sdk]
             min_sdk_version=24

@@ -1,4 +1,4 @@
 
 [workspace]
-    members=["android-demo", "desktop-demo", "engine"]
-    resolver="3"
+    members=["demo", "engine"]
+    resolver="2"

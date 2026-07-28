@@ -35,12 +35,12 @@ jobs:
               run: cargo install cargo-apk
 
             - name: Build APK
-              run: cargo apk build -p android-demo
+              run: cargo apk build -p demo
 
             - name: Upload APK
               uses: actions/upload-artifact@v7
               with:
-                  name: android-demo
+                  name: demo
                   path: |
                       target/debug/apk/*.apk
                       target/release/apk/*.apk
