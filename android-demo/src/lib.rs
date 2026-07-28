@@ -433,6 +433,7 @@ impl ApplicationHandler for DemoApp {
             .with_resizable(false);
 
         let display_builder = DisplayBuilder::new().with_window_attributes(Some(window_attributes));
+        info!("Creating DisplayBuilder");
 
         let (window, gl_config) = display_builder
             .build(event_loop, self.template.clone(), |configs| {
@@ -458,6 +459,7 @@ impl ApplicationHandler for DemoApp {
         let context_attributes = ContextAttributesBuilder::new()
             .with_context_api(ContextApi::Gles(Some(Version { major: 3, minor: 2 })))
             .build(Some(window_handle.as_raw()));
+        info!("Context created");
 
         let not_current = unsafe {
             gl_display
@@ -788,19 +790,16 @@ impl ApplicationHandler for DemoApp {
     }
 }
 
-pub fn run() {
-    env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
+#[unsafe(no_mangle)]
+pub fn android_main(app: winit::platform::android::activity::AndroidApp) {
+    env_logger::init();
 
-    let event_loop = EventLoop::new().expect("Failed to create event loop");
+    let event_loop = EventLoop::builder().with_android_app(app).build().unwrap();
+
     event_loop.set_control_flow(ControlFlow::Poll);
 
     let template = ConfigTemplateBuilder::new().with_depth_size(24);
 
-    let mut app = DemoApp::new(template);
-    event_loop.run_app(&mut app).expect("Event loop failed");
-}
-
-#[unsafe(no_mangle)]
-pub fn android_main(_app: winit::platform::android::activity::AndroidApp) {
-    run();
+    let mut demo = DemoApp::new(template);
+    event_loop.run_app(&mut demo).unwrap();
 }
