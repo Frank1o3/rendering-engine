@@ -24,6 +24,7 @@ use raw_window_handle::HasWindowHandle;
 use std::collections::HashMap;
 use std::{ffi::CString, num::NonZeroU32, sync::Arc, time::Instant};
 use winit::event::TouchPhase;
+use winit::platform::android::EventLoopBuilderExtAndroid;
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
