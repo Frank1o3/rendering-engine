@@ -42,6 +42,10 @@ use rendering_engine::{
     triple_buffer::{WriteHandle, new_triple_buffer},
 };
 
+mod shaders;
+
+use shaders::SHADERS;
+
 #[derive(Default)]
 struct Keys {
     w: bool,
@@ -492,7 +496,7 @@ impl ApplicationHandler for DemoApp {
         let cube_mesh_id = renderer.load_mesh(create_cube_mesh());
 
         let shader_map = renderer
-            .load_shaders_from_dir(std::path::Path::new("shaders_gles"))
+            .load_shaders_from_include_dir(&SHADERS)
             .expect("Failed to load shaders from ./shaders_gles/");
         let shader_lit = *shader_map
             .get("lit")
@@ -784,7 +788,7 @@ impl ApplicationHandler for DemoApp {
     }
 }
 
-fn main() {
+pub fn run() {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
 
     let event_loop = EventLoop::new().expect("Failed to create event loop");
@@ -794,4 +798,9 @@ fn main() {
 
     let mut app = DemoApp::new(template);
     event_loop.run_app(&mut app).expect("Event loop failed");
+}
+
+#[unsafe(no_mangle)]
+pub fn android_main(app: winit::platform::android::activity::AndroidApp) {
+    run();
 }

@@ -1,76 +1,85 @@
-name: CI
+name: Android APK Build
 
 on:
-  push:
-    branches: [main]
-  pull_request:
+    push:
+        branches: ["main"]
+    workflow_dispatch:
 
 jobs:
-  linux:
-    runs-on: ubuntu-latest
+    build-android:
+        runs-on: ubuntu-latest
 
-    steps:
-      - uses: actions/checkout@v4
+        env:
+            ANDROID_NDK_VERSION: 26.3.11579264
 
-      - uses: dtolnay/rust-toolchain@stable
+        steps:
+            - name: Checkout repo
+              uses: actions/checkout@v4
 
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libx11-dev \
-            libxrandr-dev \
-            libxi-dev \
-            libxcursor-dev \
-            libxinerama-dev \
-            libwayland-dev \
-            libxkbcommon-dev \
-            libegl1-mesa-dev \
-            libgl1-mesa-dev
+            # -------------------------
+            # Install Rust
+            # -------------------------
+            - name: Install Rust
+              uses: dtolnay/rust-toolchain@stable
 
-      - name: Build library
-        run: cargo build --lib --release
+            - name: Add Android targets
+              run: |
+                  rustup target add aarch64-linux-android
+                  rustup target add armv7-linux-androideabi
 
-      - name: Build demo
-        run: cargo build --example demo --release
+            # -------------------------
+            # Install Android SDK + NDK
+            # -------------------------
+            - name: Setup Android SDK
+              uses: android-actions/setup-android@v3
 
-  windows:
-    runs-on: windows-latest
+            - name: Install NDK
+              run: |
+                  sdkmanager "ndk;$ANDROID_NDK_VERSION"
 
-    steps:
-      - uses: actions/checkout@v4
+            - name: Set NDK env
+              run: |
+                  echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/$ANDROID_NDK_VERSION" >> $GITHUB_ENV
 
-      - uses: dtolnay/rust-toolchain@stable
+            # -------------------------
+            # Build Rust (shared lib)
+            # -------------------------
+            - name: Build Rust for Android (ARM64)
+              run: |
+                  cargo build --release --target aarch64-linux-android
 
-      - name: Build library
-        run: cargo build --lib --release
+            - name: Build Rust for Android (ARMv7)
+              run: |
+                  cargo build --release --target armv7-linux-androideabi
 
-      - name: Build demo
-        run: cargo build --example demo --release
+            # -------------------------
+            # Copy .so into Android app
+            # -------------------------
+            - name: Copy libs into Android project
+              run: |
+                  mkdir -p android/app/src/main/jniLibs/arm64-v8a
+                  mkdir -p android/app/src/main/jniLibs/armeabi-v7a
 
-  android:
-    runs-on: ubuntu-latest
+                  cp target/aarch64-linux-android/release/libandroid_demo.so.so \
+                     android/app/src/main/jniLibs/arm64-v8a/
 
-    steps:
-      - uses: actions/checkout@v4
+                  cp target/armv7-linux-androideabi/release/libandroid_demo.so.so \
+                     android/app/src/main/jniLibs/armeabi-v7a/
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android
+            # -------------------------
+            # Build APK (uses YOUR app)
+            # -------------------------
+            - name: Build APK with Gradle
+              run: |
+                  cd android
+                  chmod +x gradlew
+                  ./gradlew assembleDebug
 
-      - name: Install Android NDK
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r27c
-
-      - name: Configure linker
-        run: |
-          mkdir -p .cargo
-
-          cat > .cargo/config.toml <<EOF
-          [target.aarch64-linux-android]
-          linker = "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang"
-          EOF
-
-      - name: Build library
-        run: cargo build --target aarch64-linux-android --lib --release
+            # -------------------------
+            # Upload APK
+            # -------------------------
+            - name: Upload APK
+              uses: actions/upload-artifact@v4
+              with:
+                  name: app-debug
+                  path: android/app/build/outputs/apk/debug/*.apk

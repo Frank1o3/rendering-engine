@@ -261,6 +261,71 @@ impl Renderer {
         Ok(loaded)
     }
 
+    pub fn load_shaders_from_include_dir(
+        &mut self,
+        dir: &include_dir::Dir,
+    ) -> Result<HashMap<String, ShaderId>, String> {
+        use include_dir::DirEntry;
+
+        let mut loaded = HashMap::new();
+
+        for entry in dir.entries() {
+            let file = match entry {
+                DirEntry::File(file) => file,
+                DirEntry::Dir(_) => continue,
+            };
+
+            let path = file.path();
+
+            if path.extension().and_then(|e| e.to_str()) != Some("vert") {
+                continue;
+            }
+
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| "Invalid shader filename".to_string())?
+                .to_string();
+
+            let vert = file
+                .contents_utf8()
+                .ok_or_else(|| format!("{} is not UTF-8", path.display()))?;
+
+            let frag_name = format!("{stem}.frag");
+            let geom_name = format!("{stem}.geom");
+
+            let frag = dir
+                .get_file(&frag_name)
+                .ok_or_else(|| format!("Missing fragment shader for '{stem}'"))?
+                .contents_utf8()
+                .ok_or_else(|| format!("{frag_name} is not UTF-8"))?;
+
+            let geom = dir
+                .get_file(&geom_name)
+                .map(|f| {
+                    f.contents_utf8()
+                        .ok_or_else(|| format!("{geom_name} is not UTF-8"))
+                })
+                .transpose()?;
+
+            let id = self.load_shader(vert, geom, frag);
+
+            log::info!(
+                "Loaded shader: '{}'{}",
+                stem,
+                if geom.is_some() {
+                    " (+ geometry stage)"
+                } else {
+                    ""
+                }
+            );
+
+            loaded.insert(stem, id);
+        }
+
+        Ok(loaded)
+    }
+
     pub fn create_material(
         &mut self,
         shader_id: ShaderId,
