@@ -801,6 +801,6 @@ pub fn run() {
 }
 
 #[unsafe(no_mangle)]
-pub fn android_main(app: winit::platform::android::activity::AndroidApp) {
+pub fn android_main(_app: winit::platform::android::activity::AndroidApp) {
     run();
 }
