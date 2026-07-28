@@ -11,7 +11,5 @@
     bytemuck={version="1.25.2", features=["derive"]}
     glam={version="0.33.2", features=["bytemuck"]}
     glow="0.18.0"
-    glutin="0.32.3"
     include_dir="0.7.4"
     log="0.4.33"
-    raw-window-handle="0.6.2"

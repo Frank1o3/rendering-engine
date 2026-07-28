@@ -1405,10 +1405,8 @@ dependencies = [
  "bytemuck",
  "glam",
  "glow",
- "glutin",
  "include_dir",
  "log",
- "raw-window-handle",
 ]
 
 [[package]]
