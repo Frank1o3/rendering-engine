@@ -79,6 +79,7 @@ pub struct Renderer {
     /// region. `None` until that region has been used at least once.
     region_fences: [Option<glow::Fence>; TRANSFORM_REGIONS],
     frame_index: u64,
+    pending_draws: Vec<(PipelineStateId, DrawElementsIndirectCommand)>,
 }
 
 impl Renderer {
@@ -124,6 +125,7 @@ impl Renderer {
             has_frame: false,
             region_fences: [None; TRANSFORM_REGIONS],
             frame_index: 0,
+            pending_draws: Vec::with_capacity(1024),
         }
     }
 
@@ -491,9 +493,12 @@ impl Renderer {
                 .memory_barrier(glow::CLIENT_MAPPED_BUFFER_BARRIER_BIT);
         }
 
-        unsafe {
-            self.gl.bind_vertex_array(Some(self.geometry_pool.vao));
-        }
+        // ── Phase 1: build one command per (material, mesh) run ───────────────
+        // Still one command per run — that's what defines a valid
+        // base_vertex/base_instance/instance_count — but we no longer dispatch
+        // immediately. Collecting first lets runs that share a pipeline get
+        // batched into a single upload + dispatch below.
+        self.pending_draws.clear();
 
         let mut vi = 0;
         while vi < actual {
@@ -513,19 +518,7 @@ impl Renderer {
             let group_size = group_end - vi;
 
             let material_entry = *self.materials.get(&mat_id).expect("Material ID not found");
-            let pipeline_state = *self
-                .pipeline_cache
-                .get_by_id(material_entry.pipeline_id)
-                .expect("Pipeline state not found");
-
-            self.apply_pipeline(&pipeline_state);
-
             let mesh = self.meshes.get(&mesh_id).expect("Mesh ID not found");
-            let shader = self
-                .shaders
-                .get(&material_entry.shader_id)
-                .expect("Shader ID not found");
-
             let base_instance = (start_offset + vi) as u32;
 
             let cmd = DrawElementsIndirectCommand {
@@ -536,20 +529,65 @@ impl Renderer {
                 base_instance,
             };
 
-            self.indirect_cmds.clear();
-            self.indirect_cmds.push(cmd);
-            self.indirect_buffer.upload(&self.indirect_cmds);
+            self.pending_draws.push((material_entry.pipeline_id, cmd));
+            vi = group_end;
+        }
 
-            if self.mdi_strategy == MdiStrategy::MultiCount {
-                self.indirect_buffer.upload_count(1);
+        // ── Phase 2: batch by pipeline ─────────────────────────────────────────
+        // One apply_pipeline + one shader.set_vp + one indirect upload + one
+        // dispatch per contiguous run of matching pipeline state, instead of
+        // per (material, mesh) group. This is what actually reduces CPU-side
+        // uploads and GL state changes — and it's a drop-in upgrade path to a
+        // true single-call glMultiDrawElementsIndirect the moment glow exposes
+        // it, since dispatch() already takes cmd_count.
+        self.pending_draws
+            .sort_by_key(|(pipeline_id, _)| pipeline_id.0);
+
+        unsafe {
+            self.gl.bind_vertex_array(Some(self.geometry_pool.vao));
+        }
+
+        let mut pi = 0;
+        while pi < self.pending_draws.len() {
+            let pipeline_id = self.pending_draws[pi].0;
+
+            let mut run_end = pi + 1;
+            while run_end < self.pending_draws.len() && self.pending_draws[run_end].0 == pipeline_id
+            {
+                run_end += 1;
             }
 
+            let pipeline_state = *self
+                .pipeline_cache
+                .get_by_id(pipeline_id)
+                .expect("Pipeline state not found");
+            self.apply_pipeline(&pipeline_state);
+
+            let shader = self
+                .shaders
+                .get(&ShaderId(pipeline_state.shader_id))
+                .expect("Shader ID not found");
             shader.set_vp(vp);
 
-            self.indirect_buffer
-                .dispatch(self.mdi_strategy, glow::UNSIGNED_INT, 0, 1, 1);
+            self.indirect_cmds.clear();
+            self.indirect_cmds
+                .extend(self.pending_draws[pi..run_end].iter().map(|(_, cmd)| *cmd));
+            self.indirect_buffer.upload(&self.indirect_cmds);
 
-            vi = group_end;
+            let cmd_count = self.indirect_cmds.len();
+            if self.mdi_strategy == MdiStrategy::MultiCount {
+                self.indirect_buffer.upload_count(cmd_count as u32);
+            }
+
+            self.indirect_buffer.dispatch(
+                self.mdi_strategy,
+                glow::UNSIGNED_INT,
+                0,
+                cmd_count,
+                cmd_count as u32,
+            );
+
+            pi = run_end;
         }
 
         unsafe {

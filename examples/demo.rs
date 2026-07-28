@@ -1,23 +1,19 @@
-// examples/demo.rs
+// examples/demo_gles.rs
 //
-// Rendering engine feature demo.
-// Press 1 / 2 / 3 to switch rendering mode:
-//   1 — Lit (Lambertian diffuse, tests packed normals at location 1)
-//   2 — Wireframe (geometry shader, barycentric edge overlay)
-//   3 — Flat color (basic unlit shader)
+// Minimal OpenGL ES 3.2 demo: a single spinning, lit cube.
+// Same input scheme as demo.rs: WASD + Space/LCtrl to fly, mouse to look,
+// ESC to toggle cursor grab.
 //
-// WASD + Space/LCtrl to fly. Mouse to look around. ESC to toggle cursor grab.
-//
-// Scene: 101×101 grid of cubes + one rotating dynamic cube in the centre.
-// FPS counter displayed in the top-left corner using a zero-allocation bitmap
-// font (same technique as before, rendered via the UI shader).
-
+// The only real app-creation difference vs. the desktop demo is the
+// requested context API/version below. Everything else — shader loading,
+// materials, scene, render loop — goes through the same engine API.
+// Shader *source* differs because GLSL ES requires a different #version
+// pragma and mandatory precision qualifiers — see shaders_gles/.
 use glow::Context;
 use glutin::{
     config::{ConfigTemplateBuilder, GlConfig},
     context::{
-        ContextApi, ContextAttributesBuilder, GlProfile, NotCurrentGlContext,
-        PossiblyCurrentContext, Version,
+        ContextApi, ContextAttributesBuilder, NotCurrentGlContext, PossiblyCurrentContext, Version,
     },
     display::{GetGlDisplay, GlDisplay},
     surface::{GlSurface, Surface, SwapInterval, WindowSurface},
@@ -25,7 +21,9 @@ use glutin::{
 use glutin_winit::{DisplayBuilder, GlWindow};
 use log::info;
 use raw_window_handle::HasWindowHandle;
+use std::collections::HashMap;
 use std::{ffi::CString, num::NonZeroU32, sync::Arc, time::Instant};
+use winit::event::TouchPhase;
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
@@ -37,39 +35,12 @@ use winit::{
 
 use glam::{Quat, Vec3};
 use rendering_engine::{
-    MdiStrategy,
     engine::{MaterialId, MeshId, Renderer, ShaderId},
     frame_data::{FrameData, RenderCommand},
     mesh::{MeshData, Vertex},
-    pipeline::{BlendFactor, CullMode, DepthFunc, PipelineState},
-    scene::ObjectKind,
+    pipeline::PipelineState,
     triple_buffer::{WriteHandle, new_triple_buffer},
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Rendering mode
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum RenderMode {
-    Lit,       // key 1 — Lambertian + ambient, tests normals
-    Wireframe, // key 2 — geometry shader, barycentric edges
-    Flat,      // key 3 — basic unlit color
-}
-
-impl RenderMode {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Lit => "1:Lit",
-            Self::Wireframe => "2:Wire",
-            Self::Flat => "3:Flat",
-        }
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Input state
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Default)]
 struct Keys {
@@ -80,10 +51,125 @@ struct Keys {
     space: bool,
     lctrl: bool,
 }
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ButtonId {
+    Forward,
+    Back,
+    Left,
+    Right,
+    Up,
+    Down,
+}
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Application state
-// ─────────────────────────────────────────────────────────────────────────────
+#[derive(Clone, Copy)]
+struct Rect {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+}
+
+impl Rect {
+    fn contains(&self, px: f32, py: f32) -> bool {
+        px >= self.x && px <= self.x + self.w && py >= self.y && py <= self.y + self.h
+    }
+}
+
+const BTN: f32 = 72.0;
+const GAP: f32 = 10.0;
+const MARGIN: f32 = 24.0;
+
+/// Screen-space (pixel, origin top-left) rects for the on-screen D-pad
+/// (bottom-left) and up/down cluster (bottom-right). Recomputed every call
+/// so it stays correct across resizes — cheap enough to not bother caching.
+fn button_rects(width: f32, height: f32) -> [(ButtonId, Rect); 6] {
+    let row_y = height - MARGIN - BTN;
+    let a_x = MARGIN;
+    let s_x = MARGIN + BTN + GAP;
+    let d_x = MARGIN + 2.0 * (BTN + GAP);
+    let w_y = row_y - BTN - GAP;
+
+    let down_x = width - MARGIN - BTN;
+    let down_y = height - MARGIN - BTN;
+    let up_y = down_y - BTN - GAP;
+
+    [
+        (
+            ButtonId::Forward,
+            Rect {
+                x: s_x,
+                y: w_y,
+                w: BTN,
+                h: BTN,
+            },
+        ),
+        (
+            ButtonId::Left,
+            Rect {
+                x: a_x,
+                y: row_y,
+                w: BTN,
+                h: BTN,
+            },
+        ),
+        (
+            ButtonId::Back,
+            Rect {
+                x: s_x,
+                y: row_y,
+                w: BTN,
+                h: BTN,
+            },
+        ),
+        (
+            ButtonId::Right,
+            Rect {
+                x: d_x,
+                y: row_y,
+                w: BTN,
+                h: BTN,
+            },
+        ),
+        (
+            ButtonId::Up,
+            Rect {
+                x: down_x,
+                y: up_y,
+                w: BTN,
+                h: BTN,
+            },
+        ),
+        (
+            ButtonId::Down,
+            Rect {
+                x: down_x,
+                y: down_y,
+                w: BTN,
+                h: BTN,
+            },
+        ),
+    ]
+}
+
+fn set_button_key(state: &mut DemoState, btn: ButtonId, val: bool) {
+    match btn {
+        ButtonId::Forward => state.keys.w = val,
+        ButtonId::Back => state.keys.s = val,
+        ButtonId::Left => state.keys.a = val,
+        ButtonId::Right => state.keys.d = val,
+        ButtonId::Up => state.keys.space = val,
+        ButtonId::Down => state.keys.lctrl = val,
+    }
+}
+
+/// What an in-progress touch is doing: held on a virtual button, or
+/// dragging to look around (any touch that didn't start on a button).
+enum TouchKind {
+    Button(ButtonId),
+    Look { last: (f32, f32) },
+}
+
+const TOUCH_LOOK_SENSITIVITY: f32 = 0.004;
 
 struct DemoState {
     window: Arc<Window>,
@@ -92,37 +178,14 @@ struct DemoState {
     renderer: Renderer,
     write_handle: WriteHandle<FrameData>,
 
-    // Per-mode material IDs — swapping mode just changes which material_id we
-    // pass to add_object / the dynamic cube RenderCommand.
-    mat_lit: MaterialId,
-    mat_wireframe: MaterialId,
-    mat_flat: MaterialId,
-
-    // Mesh IDs
     cube_mesh_id: MeshId,
-
-    // Static grid handles (all cubes share one handle vec per mode approach:
-    // we simply store handles and re-call add_object when the mode changes).
-    grid_handles: Vec<rendering_engine::scene::ObjectHandle>,
-    grid_positions: Vec<Vec3>,
-
-    // Dynamic cube
-    dyn_angle: f32,
-
-    // UI
-    ui_mesh_id: MeshId,
-    ui_material_id: MaterialId,
-    current_fps: f32,
-
-    // Shader IDs needed to upload per-frame uniforms
+    mat_lit: MaterialId,
     shader_lit: ShaderId,
-    shader_wireframe: ShaderId,
+
+    dyn_angle: f32,
 
     width: u32,
     height: u32,
-
-    render_mode: RenderMode,
-    mode_changed: bool, // flag to rebuild the scene on mode switch
 
     camera_pos: Vec3,
     camera_yaw: f32,
@@ -131,8 +194,15 @@ struct DemoState {
     cursor_grabbed: bool,
 
     last_frame: Instant,
+    quad_mesh_id: MeshId,
+    button_quad_mesh_id: MeshId,
+    ui_material_id: MaterialId,
+
+    current_fps: f32,
     frame_count: u32,
     last_fps_update: Instant,
+
+    touches: HashMap<u64, TouchKind>,
 }
 
 pub struct DemoApp {
@@ -151,69 +221,48 @@ impl DemoApp {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Mesh helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
+// Identical geometry to demo.rs's create_cube_mesh — CCW winding,
+// explicit per-face normals, one color per face.
 fn create_cube_mesh() -> MeshData {
-    // Each face: 4 vertices wound CCW when viewed from outside.
-    // Positions are on the unit cube [-0.5, 0.5].
-    // Normals are explicit per-face (hard edges, not averaged).
-    // Using Vertex::new() which calls pack_normal() internally.
-
-    let r = [220u8, 60, 60, 255]; // red    — front  +Z
-    let g = [60u8, 200, 60, 255]; // green  — back   -Z
-    let b = [60u8, 60, 220, 255]; // blue   — top    +Y
-    let y = [220u8, 200, 40, 255]; // yellow — bottom -Y
-    let m = [180u8, 60, 220, 255]; // purple — right  +X
-    let c = [40u8, 200, 220, 255]; // cyan   — left   -X
+    let r = [220u8, 60, 60, 255];
+    let g = [60u8, 200, 60, 255];
+    let b = [60u8, 60, 220, 255];
+    let y = [220u8, 200, 40, 255];
+    let m = [180u8, 60, 220, 255];
+    let c = [40u8, 200, 220, 255];
 
     let mut v = Vec::with_capacity(24);
 
-    // Front face (+Z), normal = (0, 0, 1)
-    // Viewed from +Z looking in: CCW = BL, BR, TR, TL
     v.push(Vertex::new([-0.5, -0.5, 0.5], [0.0, 0.0, 1.0], r));
     v.push(Vertex::new([0.5, -0.5, 0.5], [0.0, 0.0, 1.0], r));
     v.push(Vertex::new([0.5, 0.5, 0.5], [0.0, 0.0, 1.0], r));
     v.push(Vertex::new([-0.5, 0.5, 0.5], [0.0, 0.0, 1.0], r));
 
-    // Back face (-Z), normal = (0, 0, -1)
-    // Viewed from -Z looking in: CCW = BR, BL, TL, TR
     v.push(Vertex::new([0.5, -0.5, -0.5], [0.0, 0.0, -1.0], g));
     v.push(Vertex::new([-0.5, -0.5, -0.5], [0.0, 0.0, -1.0], g));
     v.push(Vertex::new([-0.5, 0.5, -0.5], [0.0, 0.0, -1.0], g));
     v.push(Vertex::new([0.5, 0.5, -0.5], [0.0, 0.0, -1.0], g));
 
-    // Top face (+Y), normal = (0, 1, 0)
-    // Viewed from +Y looking down: CCW = BL, BR, TR, TL (in XZ plane)
     v.push(Vertex::new([-0.5, 0.5, 0.5], [0.0, 1.0, 0.0], b));
     v.push(Vertex::new([0.5, 0.5, 0.5], [0.0, 1.0, 0.0], b));
     v.push(Vertex::new([0.5, 0.5, -0.5], [0.0, 1.0, 0.0], b));
     v.push(Vertex::new([-0.5, 0.5, -0.5], [0.0, 1.0, 0.0], b));
 
-    // Bottom face (-Y), normal = (0, -1, 0)
-    // Viewed from -Y looking up: CCW = BL, BR, TR, TL
     v.push(Vertex::new([-0.5, -0.5, -0.5], [0.0, -1.0, 0.0], y));
     v.push(Vertex::new([0.5, -0.5, -0.5], [0.0, -1.0, 0.0], y));
     v.push(Vertex::new([0.5, -0.5, 0.5], [0.0, -1.0, 0.0], y));
     v.push(Vertex::new([-0.5, -0.5, 0.5], [0.0, -1.0, 0.0], y));
 
-    // Right face (+X), normal = (1, 0, 0)
-    // Viewed from +X looking left: CCW = BL, BR, TR, TL (in ZY plane)
     v.push(Vertex::new([0.5, -0.5, 0.5], [1.0, 0.0, 0.0], m));
     v.push(Vertex::new([0.5, -0.5, -0.5], [1.0, 0.0, 0.0], m));
     v.push(Vertex::new([0.5, 0.5, -0.5], [1.0, 0.0, 0.0], m));
     v.push(Vertex::new([0.5, 0.5, 0.5], [1.0, 0.0, 0.0], m));
 
-    // Left face (-X), normal = (-1, 0, 0)
-    // Viewed from -X looking right: CCW = BL, BR, TR, TL
     v.push(Vertex::new([-0.5, -0.5, -0.5], [-1.0, 0.0, 0.0], c));
     v.push(Vertex::new([-0.5, -0.5, 0.5], [-1.0, 0.0, 0.0], c));
     v.push(Vertex::new([-0.5, 0.5, 0.5], [-1.0, 0.0, 0.0], c));
     v.push(Vertex::new([-0.5, 0.5, -0.5], [-1.0, 0.0, 0.0], c));
 
-    // Indices: two CCW triangles per face (0,1,2), (2,3,0)
-    // This pattern is correct for CCW quads: splits the quad along the 0-2 diagonal
     let mut indices = Vec::with_capacity(36);
     for face in 0..6u32 {
         let b = face * 4;
@@ -227,7 +276,7 @@ fn create_cube_mesh() -> MeshData {
 }
 
 fn create_quad_mesh() -> MeshData {
-    let n: [i8; 4] = [0, 0, 127, 0]; // +Z normal
+    let n: [i8; 4] = [0, 0, 127, 0];
     let vertices = vec![
         Vertex {
             position: [0.0, 0.0, 0.0],
@@ -250,62 +299,123 @@ fn create_quad_mesh() -> MeshData {
             color: [255, 255, 255, 255],
         },
     ];
-    let indices = vec![0, 1, 2, 2, 3, 0];
-    MeshData { vertices, indices }
+    MeshData {
+        vertices,
+        indices: vec![0, 1, 2, 2, 3, 0],
+    }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 3×5 bitmap font (digits 0–9)
-// ─────────────────────────────────────────────────────────────────────────────
+/// Same unit quad, but translucent dark gray — used for the on-screen
+/// touch button backgrounds so they read as buttons without occluding
+/// the scene behind them.
+fn create_button_quad_mesh() -> MeshData {
+    let n: [i8; 4] = [0, 0, 127, 0];
+    let col = [70u8, 70, 80, 140]; // alpha < 255 → translucent via ui_material's blend state
+    let vertices = vec![
+        Vertex {
+            position: [0.0, 0.0, 0.0],
+            normal: n,
+            color: col,
+        },
+        Vertex {
+            position: [1.0, 0.0, 0.0],
+            normal: n,
+            color: col,
+        },
+        Vertex {
+            position: [1.0, 1.0, 0.0],
+            normal: n,
+            color: col,
+        },
+        Vertex {
+            position: [0.0, 1.0, 0.0],
+            normal: n,
+            color: col,
+        },
+    ];
+    MeshData {
+        vertices,
+        indices: vec![0, 1, 2, 2, 3, 0],
+    }
+}
 
 const FONT: [[u8; 5]; 10] = [
-    [0b111, 0b101, 0b101, 0b101, 0b111], // 0
-    [0b010, 0b010, 0b010, 0b010, 0b010], // 1
-    [0b111, 0b001, 0b111, 0b100, 0b111], // 2
-    [0b111, 0b001, 0b111, 0b001, 0b111], // 3
-    [0b101, 0b101, 0b111, 0b001, 0b001], // 4
-    [0b111, 0b100, 0b111, 0b001, 0b111], // 5
-    [0b111, 0b100, 0b111, 0b101, 0b111], // 6
-    [0b111, 0b001, 0b010, 0b010, 0b010], // 7
-    [0b111, 0b101, 0b111, 0b101, 0b111], // 8
-    [0b111, 0b101, 0b111, 0b001, 0b111], // 9
+    [0b111, 0b101, 0b101, 0b101, 0b111],
+    [0b010, 0b010, 0b010, 0b010, 0b010],
+    [0b111, 0b001, 0b111, 0b100, 0b111],
+    [0b111, 0b001, 0b111, 0b001, 0b111],
+    [0b101, 0b101, 0b111, 0b001, 0b001],
+    [0b111, 0b100, 0b111, 0b001, 0b111],
+    [0b111, 0b100, 0b111, 0b101, 0b111],
+    [0b111, 0b001, 0b010, 0b010, 0b010],
+    [0b111, 0b101, 0b111, 0b101, 0b111],
+    [0b111, 0b101, 0b111, 0b001, 0b111],
 ];
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Grid building helper — populates the scene with the current material
-// ─────────────────────────────────────────────────────────────────────────────
-
-fn rebuild_grid(state: &mut DemoState) {
-    // Remove old handles
-    for h in state.grid_handles.drain(..) {
-        state.renderer.remove_object(h);
-    }
-
-    let mat = match state.render_mode {
-        RenderMode::Lit => state.mat_lit,
-        RenderMode::Wireframe => state.mat_wireframe,
-        RenderMode::Flat => state.mat_flat,
-    };
-
-    // Re-add all grid objects with the new material.
-    // The mesh_id stays constant — only the material_id changes.
-    // We look up the single cube mesh_id from the first handle's mesh in the
-    // renderer.  Instead, we cache it in grid_positions and pass mesh_id in.
-    // Simpler: store mesh_id in DemoState. We do that via a local captured var
-    // passed from resumed().  Because rebuild_grid is called on mode switch
-    // AFTER the initial build, we need the mesh_id available.  We stash it in
-    // state as a field — see DemoState.cube_mesh_id.
-    let mesh_id = state.cube_mesh_id;
-    for &pos in &state.grid_positions {
-        let h = state.renderer.add_object(mesh_id, mat, ObjectKind::Static);
-        state.renderer.set_transform(h, pos, Quat::IDENTITY, 1.0);
-        state.grid_handles.push(h);
+fn char_glyph(ch: char) -> Option<[u8; 5]> {
+    match ch.to_ascii_uppercase() {
+        'F' => Some([0b111, 0b100, 0b111, 0b100, 0b100]),
+        'I' => Some([0b111, 0b010, 0b010, 0b010, 0b111]),
+        'P' => Some([0b111, 0b101, 0b111, 0b100, 0b100]),
+        'S' => Some([0b111, 0b100, 0b111, 0b001, 0b111]),
+        _ => None,
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ApplicationHandler
-// ─────────────────────────────────────────────────────────────────────────────
+fn emit_ui_text(
+    cmds: &mut Vec<RenderCommand>,
+    mesh_id: MeshId,
+    material_id: MaterialId,
+    mut x: f32,
+    y: f32,
+    text: &str,
+    pixel_size: f32,
+) {
+    for ch in text.chars() {
+        if ch == ' ' {
+            x += 4.0 * pixel_size;
+            continue;
+        }
+        if ch == ':' {
+            for &row in &[1u32, 3] {
+                cmds.push(RenderCommand {
+                    mesh_id,
+                    material_id,
+                    position: Vec3::new(x + pixel_size, y + row as f32 * pixel_size, 0.0),
+                    rotation: Quat::IDENTITY,
+                    scale: pixel_size * 0.9,
+                });
+            }
+            x += 3.0 * pixel_size;
+            continue;
+        }
+        let glyph = if ch.is_ascii_digit() {
+            Some(FONT[(ch as u8 - b'0') as usize])
+        } else {
+            char_glyph(ch)
+        };
+        if let Some(rows) = glyph {
+            for (row_idx, &row) in rows.iter().enumerate() {
+                for col in 0..3u32 {
+                    if (row & (1 << (2 - col))) != 0 {
+                        cmds.push(RenderCommand {
+                            mesh_id,
+                            material_id,
+                            position: Vec3::new(
+                                x + col as f32 * pixel_size,
+                                y + row_idx as f32 * pixel_size,
+                                0.0,
+                            ),
+                            rotation: Quat::IDENTITY,
+                            scale: pixel_size * 0.9,
+                        });
+                    }
+                }
+            }
+        }
+        x += 4.0 * pixel_size;
+    }
+}
 
 impl ApplicationHandler for DemoApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -313,9 +423,8 @@ impl ApplicationHandler for DemoApp {
             return;
         }
 
-        // ── Window + GL context ──────────────────────────────────────────────
         let window_attributes = Window::default_attributes()
-            .with_title("Rendering Engine 3D Demo")
+            .with_title("Rendering Engine — OpenGL ES 3.2 3D Demo")
             .with_inner_size(PhysicalSize::new(1280u32, 720u32))
             .with_resizable(false);
 
@@ -339,15 +448,17 @@ impl ApplicationHandler for DemoApp {
         let gl_display = gl_config.display();
         let window_handle = window.window_handle().unwrap();
 
+        // ── The one real app-creation difference vs. the desktop demo ───────
+        // Request OpenGL ES 3.2 instead of desktop GL 4.6. No GlProfile call —
+        // ES has no Core/Compatibility distinction to select.
         let context_attributes = ContextAttributesBuilder::new()
-            .with_profile(GlProfile::Core)
-            .with_context_api(ContextApi::OpenGl(Some(Version { major: 4, minor: 6 })))
+            .with_context_api(ContextApi::Gles(Some(Version { major: 3, minor: 2 })))
             .build(Some(window_handle.as_raw()));
 
         let not_current = unsafe {
             gl_display
                 .create_context(&gl_config, &context_attributes)
-                .expect("Failed to create GL context")
+                .expect("Failed to create GLES 3.2 context — check driver/device support")
         };
 
         let attrs = window.build_surface_attributes(Default::default()).unwrap();
@@ -373,75 +484,39 @@ impl ApplicationHandler for DemoApp {
             })
         };
 
-        info!("OpenGL context initialised");
+        info!("OpenGL ES context initialised");
 
-        // ── Renderer ────────────────────────────────────────────────────────
         let (write_handle, read_handle) = new_triple_buffer::<FrameData>();
         let mut renderer = Renderer::new(gl, read_handle);
-        renderer.set_mdi_strategy(MdiStrategy::Multi);
 
-        // ── Meshes ───────────────────────────────────────────────────────────
         let cube_mesh_id = renderer.load_mesh(create_cube_mesh());
-        let ui_mesh_id = renderer.load_mesh(create_quad_mesh());
 
-        // ── Shaders ──────────────────────────────────────────────────────────
         let shader_map = renderer
-            .load_shaders_from_dir(std::path::Path::new("shaders"))
-            .expect("Failed to load shaders from ./shaders/");
+            .load_shaders_from_dir(std::path::Path::new("shaders_gles"))
+            .expect("Failed to load shaders from ./shaders_gles/");
+        let shader_lit = *shader_map
+            .get("lit")
+            .expect("Missing 'lit' GLES shader — check shaders_gles/lit.vert + .frag exist");
 
-        let get = |name: &str| -> ShaderId {
-            *shader_map
-                .get(name)
-                .unwrap_or_else(|| panic!("Missing shader: '{}'", name))
-        };
-
-        let shader_lit = get("lit");
-        let shader_wireframe = get("wireframe");
-        let shader_flat = get("basic");
-        let shader_ui = get("ui");
-
-        // ── Materials ────────────────────────────────────────────────────────
         let mat_lit =
             renderer.create_material(shader_lit, PipelineState::default_opaque(shader_lit.0));
-        2;
-        let mat_wireframe = renderer.create_material(
-            shader_wireframe,
-            PipelineState::default_opaque(shader_wireframe.0),
-        );
+        let quad_mesh_id = renderer.load_mesh(create_quad_mesh());
+        let button_quad_mesh_id = renderer.load_mesh(create_button_quad_mesh());
 
-        let mat_flat =
-            renderer.create_material(shader_flat, PipelineState::default_opaque(shader_flat.0));
-
+        let shader_ui = *shader_map
+            .get("ui")
+            .expect("Missing 'ui' GLES shader — check shaders_gles/ui.vert + .frag exist");
         let ui_pipeline = PipelineState {
             shader_id: shader_ui.0,
-            cull_mode: CullMode::None,
+            cull_mode: rendering_engine::pipeline::CullMode::None,
             depth_test: true,
             depth_write: false,
-            depth_func: DepthFunc::Less,
+            depth_func: rendering_engine::pipeline::DepthFunc::Less,
             blend_enabled: true,
-            src_factor: BlendFactor::SrcAlpha,
-            dst_factor: BlendFactor::OneMinusSrcAlpha,
+            src_factor: rendering_engine::pipeline::BlendFactor::SrcAlpha,
+            dst_factor: rendering_engine::pipeline::BlendFactor::OneMinusSrcAlpha,
         };
         let ui_material_id = renderer.create_material(shader_ui, ui_pipeline);
-
-        // ── Grid positions ───────────────────────────────────────────────────
-        const GRID: i32 = 25;
-        const GAP: f32 = 1.0;
-
-        let mut grid_positions = Vec::with_capacity(((GRID * 2 + 1) * (GRID * 2 + 1)) as usize);
-        for x in -GRID..=GRID {
-            for z in -GRID..=GRID {
-                grid_positions.push(Vec3::new(x as f32 * GAP, 0.0, z as f32 * GAP));
-            }
-        }
-
-        // ── Initial scene (Lit mode) ─────────────────────────────────────────
-        let mut grid_handles = Vec::with_capacity(grid_positions.len());
-        for &pos in &grid_positions {
-            let h = renderer.add_object(cube_mesh_id, mat_lit, ObjectKind::Static);
-            renderer.set_transform(h, pos, Quat::IDENTITY, 1.0);
-            grid_handles.push(h);
-        }
 
         self.state = Some(DemoState {
             window,
@@ -450,37 +525,31 @@ impl ApplicationHandler for DemoApp {
             renderer,
             write_handle,
 
-            mat_lit,
-            mat_wireframe,
-            mat_flat,
-
             cube_mesh_id,
-            grid_handles,
-            grid_positions,
-            dyn_angle: 0.0,
-
-            ui_mesh_id,
-            ui_material_id,
-            current_fps: 0.0,
-
+            mat_lit,
             shader_lit,
-            shader_wireframe,
+
+            dyn_angle: 0.0,
 
             width: 1280,
             height: 720,
 
-            render_mode: RenderMode::Lit,
-            mode_changed: false,
-
-            camera_pos: Vec3::new(0.0, 2.0, 10.0),
+            camera_pos: Vec3::new(0.0, 1.0, 5.0),
             camera_yaw: 0.0,
             camera_pitch: 0.0,
             keys: Keys::default(),
             cursor_grabbed: true,
 
             last_frame: Instant::now(),
+            quad_mesh_id,
+            button_quad_mesh_id,
+            ui_material_id,
+
+            current_fps: 0.0,
             frame_count: 0,
             last_fps_update: Instant::now(),
+
+            touches: HashMap::new(),
         });
     }
 
@@ -522,26 +591,6 @@ impl ApplicationHandler for DemoApp {
                         KeyCode::Space => state.keys.space = pressed,
                         KeyCode::ControlLeft => state.keys.lctrl = pressed,
 
-                        // Mode switching
-                        KeyCode::Digit1 if pressed => {
-                            if state.render_mode != RenderMode::Lit {
-                                state.render_mode = RenderMode::Lit;
-                                state.mode_changed = true;
-                            }
-                        }
-                        KeyCode::Digit2 if pressed => {
-                            if state.render_mode != RenderMode::Wireframe {
-                                state.render_mode = RenderMode::Wireframe;
-                                state.mode_changed = true;
-                            }
-                        }
-                        KeyCode::Digit3 if pressed => {
-                            if state.render_mode != RenderMode::Flat {
-                                state.render_mode = RenderMode::Flat;
-                                state.mode_changed = true;
-                            }
-                        }
-
                         KeyCode::Escape if pressed => {
                             if state.cursor_grabbed {
                                 let _ = state.window.set_cursor_grab(CursorGrabMode::None);
@@ -556,8 +605,44 @@ impl ApplicationHandler for DemoApp {
                 }
             }
 
+            WindowEvent::Touch(touch) => {
+                let x = touch.location.x as f32;
+                let y = touch.location.y as f32;
+
+                match touch.phase {
+                    TouchPhase::Started => {
+                        let hit = button_rects(state.width as f32, state.height as f32)
+                            .into_iter()
+                            .find(|(_, rect)| rect.contains(x, y));
+
+                        if let Some((btn, _)) = hit {
+                            set_button_key(state, btn, true);
+                            state.touches.insert(touch.id, TouchKind::Button(btn));
+                        } else {
+                            state
+                                .touches
+                                .insert(touch.id, TouchKind::Look { last: (x, y) });
+                        }
+                    }
+                    TouchPhase::Moved => {
+                        if let Some(TouchKind::Look { last }) = state.touches.get_mut(&touch.id) {
+                            let dx = x - last.0;
+                            let dy = y - last.1;
+                            state.camera_yaw -= dx * TOUCH_LOOK_SENSITIVITY;
+                            state.camera_pitch -= dy * TOUCH_LOOK_SENSITIVITY;
+                            state.camera_pitch = state.camera_pitch.clamp(-1.5, 1.5);
+                            *last = (x, y);
+                        }
+                    }
+                    TouchPhase::Ended | TouchPhase::Cancelled => {
+                        if let Some(TouchKind::Button(btn)) = state.touches.remove(&touch.id) {
+                            set_button_key(state, btn, false);
+                        }
+                    }
+                }
+            }
+
             WindowEvent::RedrawRequested => {
-                // ── FPS counter ──────────────────────────────────────────────
                 state.frame_count += 1;
                 let now = Instant::now();
                 let elapsed = (now - state.last_fps_update).as_secs_f32();
@@ -567,7 +652,6 @@ impl ApplicationHandler for DemoApp {
                     state.last_fps_update = now;
                 }
 
-                // ── Cursor grab ──────────────────────────────────────────────
                 if self.pending_grab {
                     self.pending_grab = false;
                     if state
@@ -581,18 +665,10 @@ impl ApplicationHandler for DemoApp {
                     }
                 }
 
-                // ── Delta time ───────────────────────────────────────────────
                 let now = Instant::now();
                 let dt = (now - state.last_frame).as_secs_f32().min(0.1);
                 state.last_frame = now;
 
-                // ── Mode switch: rebuild static grid ─────────────────────────
-                if state.mode_changed {
-                    state.mode_changed = false;
-                    rebuild_grid(state);
-                }
-
-                // ── Camera ───────────────────────────────────────────────────
                 let cam_rot = Quat::from_euler(
                     glam::EulerRot::YXZ,
                     state.camera_yaw,
@@ -624,109 +700,64 @@ impl ApplicationHandler for DemoApp {
                 if vel.length_squared() > 0.0 {
                     vel = vel.normalize();
                 }
-                state.camera_pos += vel * 10.0 * dt;
+                state.camera_pos += vel * 5.0 * dt;
 
-                // ── Dynamic cube (spins in the centre, above the grid) ───────
                 state.dyn_angle += dt * 1.2;
                 let dyn_rot = Quat::from_rotation_y(state.dyn_angle)
                     * Quat::from_rotation_x(state.dyn_angle * 0.7);
 
-                let dyn_mat = match state.render_mode {
-                    RenderMode::Lit => state.mat_lit,
-                    RenderMode::Wireframe => state.mat_wireframe,
-                    RenderMode::Flat => state.mat_flat,
-                };
-
-                // ── Write FrameData ──────────────────────────────────────────
                 let frame = state.write_handle.write_slot();
                 frame.commands.clear();
                 frame.ui_commands.clear();
-
-                // Dynamic spinning cube
                 frame.commands.push(RenderCommand {
                     mesh_id: state.cube_mesh_id,
-                    material_id: dyn_mat,
-                    position: Vec3::new(0.0, 3.0, 0.0),
+                    material_id: state.mat_lit,
+                    position: Vec3::ZERO,
                     rotation: dyn_rot,
-                    scale: 1.5,
+                    scale: 1.0,
                 });
-
-                // ── Upload per-frame shader uniforms ─────────────────────────
-                // These are set via the shader's direct uniform API; the
-                // renderer exposes shaders through get_shader(). We use
-                // set_vec3 / set_f32 which glow handles at next use_program.
-                //
-                // The renderer calls use_program during render(), so we need
-                // uniforms set BEFORE swap. We pre-bind them now via the
-                // ShaderProgram accessors exposed through Renderer::shader_*
-                // helpers — but the engine doesn't expose those directly.
-                //
-                // Simplest correct approach: set uniforms via the ShaderProgram
-                // handles we stashed in the DemoState. The GL program is already
-                // created; uniform locations are cached inside ShaderProgram.
-                // We call renderer.set_shader_uniforms_lit / _wireframe below.
-                // Since the renderer doesn't expose a generic "set uniform on
-                // shader X" API, we use the public shader uniform helpers
-                // through renderer.scene.  Actually, the cleanest path given
-                // the current API surface: upload uniforms directly via the
-                // renderer's wrapper methods which forward to ShaderProgram.
-
-                // Camera
                 frame.camera_position = state.camera_pos;
                 frame.camera_rotation = cam_rot;
                 frame.camera_fov = std::f32::consts::FRAC_PI_3;
                 frame.camera_aspect_ratio = state.width as f32 / state.height as f32;
                 frame.camera_near = 0.1;
-                frame.camera_far = 300.0;
+                frame.camera_far = 100.0;
 
-                // ── UI: mode label + FPS counter ─────────────────────────────
                 emit_ui_text(
                     &mut frame.ui_commands,
-                    state.ui_mesh_id,
+                    state.quad_mesh_id,
                     state.ui_material_id,
                     10.0,
                     10.0,
-                    &format!(
-                        "{} | {:.0} FPS",
-                        state.render_mode.label(),
-                        state.current_fps
-                    ),
+                    &format!("{:.0} FPS", state.current_fps),
                     8.0,
                 );
 
+                // On-screen touch controls — only meaningful (and only drawn)
+                // when actually running on a touch device.
+                if cfg!(target_os = "android") {
+                    for (_, rect) in button_rects(state.width as f32, state.height as f32) {
+                        frame.ui_commands.push(RenderCommand {
+                            mesh_id: state.button_quad_mesh_id,
+                            material_id: state.ui_material_id,
+                            position: Vec3::new(rect.x, rect.y, 0.0),
+                            rotation: Quat::IDENTITY,
+                            scale: rect.w, // square buttons — InstanceData.scale is uniform
+                        });
+                    }
+                }
+
                 state.write_handle.publish();
 
-                // ── Per-frame uniforms for lit / wireframe shaders ────────────
-                // We need to call use_program ourselves here to set uniforms.
-                // The renderer's ShaderProgram is not exposed publicly, but we
-                // CAN call the renderer's set_shader_* helpers after adding
-                // them to the API. For now we use the renderer's gl handle
-                // via the public scene/render path.
-                //
-                // Practical solution: add two thin helper methods to Renderer
-                // (see below). Since we can't modify the library here, we use
-                // the fact that ShaderProgram::set_vec3 calls use_program
-                // internally — actually it doesn't; set_vec3 calls
-                // get_uniform_location each time which only works on the
-                // currently bound program.
-                //
-                // The cleanest zero-API-change approach: call
-                // renderer.upload_lit_uniforms() / renderer.upload_wireframe_uniforms()
-                // which we define BELOW as extension methods via a trait.
-                // Those methods use the Renderer's public `scene` field and
-                // the stored shader IDs. They call use_program + uniform upload
-                // before render() is called.
-                state.renderer.set_lit_uniforms(
+                state.renderer.upload_shader_vec3(
                     state.shader_lit,
-                    Vec3::new(0.6, 0.8, 0.4).normalize(), // sun direction
-                    0.18,                                 // ambient
+                    "uSunDir",
+                    Vec3::new(0.6, 0.8, 0.4).normalize(),
                 );
-                state.renderer.set_wireframe_uniforms(
-                    state.shader_wireframe,
-                    0.04, // edge width
-                );
+                state
+                    .renderer
+                    .upload_shader_f32(state.shader_lit, "uAmbient", 0.18);
 
-                // ── Render ───────────────────────────────────────────────────
                 state.renderer.render();
                 state.gl_surface.swap_buffers(&state.gl_context).unwrap();
             }
@@ -753,168 +784,13 @@ impl ApplicationHandler for DemoApp {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// DemoState extra fields (added inline above, declared here as a reminder)
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// The struct above already includes `cube_mesh_id: MeshId` — needed by
-// `rebuild_grid`. Rust requires all fields in the struct literal, so it's
-// declared in the struct body rather than here.
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Renderer extension trait — sets per-frame uniforms without changing engine.rs
-// ─────────────────────────────────────────────────────────────────────────────
-
-trait DemoUniforms {
-    fn set_lit_uniforms(&mut self, shader_id: ShaderId, sun_dir: Vec3, ambient: f32);
-    fn set_wireframe_uniforms(&mut self, shader_id: ShaderId, edge_width: f32);
-}
-
-impl DemoUniforms for Renderer {
-    fn set_lit_uniforms(&mut self, shader_id: ShaderId, sun_dir: Vec3, ambient: f32) {
-        // We need the GL program handle. Renderer exposes shaders via the
-        // public `shaders` HashMap field.  If it's private we access via the
-        // ShaderProgram's public helpers. Looking at engine.rs: `shaders` is
-        // NOT pub. The ShaderProgram helpers (set_vec3, set_f32) require a
-        // currently-bound program — but they call get_uniform_location each
-        // time so any program works as long as use_program has been called
-        // first. We do NOT have a reference to the ShaderProgram here.
-        //
-        // The only public surface of Renderer that touches shaders is:
-        //   load_shader, load_shader_from_files, load_shaders_from_dir
-        //
-        // Resolution: expose a `with_shader` method on Renderer, OR accept
-        // that we set uniforms inside render() by checking uSunDir/uAmbient.
-        //
-        // For a DEMO-ONLY workaround with zero engine changes: store the
-        // uniforms in FrameData extra fields (not clean) OR expose two thin
-        // public methods on Renderer (cleanest).
-        //
-        // Since we own the engine source, we'll add two methods at the bottom
-        // of engine.rs — described in the comments at the end of this file.
-        // The trait impl below calls those methods.
-        self.upload_shader_vec3(shader_id, "uSunDir", sun_dir);
-        self.upload_shader_f32(shader_id, "uAmbient", ambient);
-    }
-
-    fn set_wireframe_uniforms(&mut self, shader_id: ShaderId, edge_width: f32) {
-        self.upload_shader_f32(shader_id, "uEdgeWidth", edge_width);
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// UI text helper — emits RenderCommand quads for an ASCII string
-// ─────────────────────────────────────────────────────────────────────────────
-
-fn emit_ui_text(
-    cmds: &mut Vec<RenderCommand>,
-    mesh_id: MeshId,
-    material_id: MaterialId,
-    mut x: f32,
-    y: f32,
-    text: &str,
-    pixel_size: f32,
-) {
-    // Very small inline font: digits 0–9 from FONT, space, colon, and letters
-    // from a 5×3 uppercase bitmap. For simplicity we only support digits,
-    // colon, pipe, space, and basic uppercase A-Z letters here.
-    // Anything not in the table is replaced by a space.
-    for ch in text.chars() {
-        if ch == ' ' {
-            x += 4.0 * pixel_size;
-            continue;
-        }
-        if ch == '|' {
-            // draw a thin vertical bar
-            for row in 0..5u32 {
-                cmds.push(RenderCommand {
-                    mesh_id,
-                    material_id,
-                    position: Vec3::new(x + pixel_size, y + row as f32 * pixel_size, 0.0),
-                    rotation: Quat::IDENTITY,
-                    scale: pixel_size * 0.9,
-                });
-            }
-            x += 3.0 * pixel_size;
-            continue;
-        }
-        if ch == ':' {
-            for &row in &[1u32, 3] {
-                cmds.push(RenderCommand {
-                    mesh_id,
-                    material_id,
-                    position: Vec3::new(x + pixel_size, y + row as f32 * pixel_size, 0.0),
-                    rotation: Quat::IDENTITY,
-                    scale: pixel_size * 0.9,
-                });
-            }
-            x += 3.0 * pixel_size;
-            continue;
-        }
-        let glyph: Option<[u8; 5]> = if ch.is_ascii_digit() {
-            Some(FONT[(ch as u8 - b'0') as usize])
-        } else {
-            char_glyph(ch)
-        };
-
-        if let Some(rows) = glyph {
-            for (row_idx, &row) in rows.iter().enumerate() {
-                for col in 0..3u32 {
-                    if (row & (1 << (2 - col))) != 0 {
-                        cmds.push(RenderCommand {
-                            mesh_id,
-                            material_id,
-                            position: Vec3::new(
-                                x + col as f32 * pixel_size,
-                                y + row_idx as f32 * pixel_size,
-                                0.0,
-                            ),
-                            rotation: Quat::IDENTITY,
-                            scale: pixel_size * 0.9,
-                        });
-                    }
-                }
-            }
-        }
-        x += 4.0 * pixel_size;
-    }
-}
-
-/// Minimal uppercase ASCII glyph table for A–Z and a few symbols.
-fn char_glyph(ch: char) -> Option<[u8; 5]> {
-    match ch.to_ascii_uppercase() {
-        'F' => Some([0b111, 0b100, 0b111, 0b100, 0b100]),
-        'I' => Some([0b111, 0b010, 0b010, 0b010, 0b111]),
-        'L' => Some([0b100, 0b100, 0b100, 0b100, 0b111]),
-        'P' => Some([0b111, 0b101, 0b111, 0b100, 0b100]),
-        'S' => Some([0b111, 0b100, 0b111, 0b001, 0b111]),
-        'T' => Some([0b111, 0b010, 0b010, 0b010, 0b010]),
-        'W' => Some([0b101, 0b101, 0b101, 0b111, 0b010]),
-        'R' => Some([0b111, 0b101, 0b111, 0b110, 0b101]),
-        'E' => Some([0b111, 0b100, 0b110, 0b100, 0b111]),
-        'A' => Some([0b010, 0b101, 0b111, 0b101, 0b101]),
-        'H' => Some([0b101, 0b101, 0b111, 0b101, 0b101]),
-        'N' => Some([0b101, 0b111, 0b111, 0b101, 0b101]),
-        'O' => Some([0b111, 0b101, 0b101, 0b101, 0b111]),
-        'G' => Some([0b111, 0b100, 0b101, 0b101, 0b111]),
-        _ => None,
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Entry point
-// ─────────────────────────────────────────────────────────────────────────────
-
 fn main() {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
 
     let event_loop = EventLoop::new().expect("Failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let template = ConfigTemplateBuilder::new()
-        .with_alpha_size(8)
-        .with_depth_size(24)
-        .with_transparency(true);
+    let template = ConfigTemplateBuilder::new().with_depth_size(24);
 
     let mut app = DemoApp::new(template);
     event_loop.run_app(&mut app).expect("Event loop failed");

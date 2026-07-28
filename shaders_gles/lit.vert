@@ -1,7 +1,5 @@
-// shaders/lit.vert
-// Lambertian diffuse lighting in world space.
-// Attribute layout identical to basic.vert — must match geometry_pool.rs.
-#version 460 core
+#version 320 es
+precision highp float;
 
 layout (location = 0) in vec3  aPos;
 layout (location = 1) in vec3  aNormal;   // packed i8 normalised → [-1,1] vec3
@@ -23,7 +21,6 @@ vec3 quat_rotate(vec3 v, vec4 q) {
 
 void main() {
     vec3 worldPos    = quat_rotate(aPos * iScale, iRotation) + iPosition;
-    // Normals don't scale — just rotate
     vec3 worldNormal = normalize(quat_rotate(aNormal, iRotation));
 
     gl_Position  = uVP * vec4(worldPos, 1.0);

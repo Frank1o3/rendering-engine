@@ -1,14 +1,12 @@
-// shaders/lit.frag
-// Simple Lambertian diffuse + ambient.
-// uSunDir should be normalised before upload.
-#version 460 core
+#version 320 es
+precision highp float;
 
 in  vec4 vColor;
 in  vec3 vWorldNormal;
 out vec4 FragColor;
 
-uniform vec3 uSunDir;   // direction *toward* the light (world space, normalised)
-uniform float uAmbient; // ambient intensity in [0, 1]
+uniform vec3 uSunDir;
+uniform float uAmbient;
 
 void main() {
     vec3  n        = normalize(vWorldNormal);
