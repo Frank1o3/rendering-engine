@@ -66,7 +66,7 @@ jobs:
             - name: Build Android APK
               if: matrix.target == 'android'
               env:
-                  CARGO_APK_RELEASE_KEYSTORE: keys/upload-keystore.jks
+                  CARGO_APK_RELEASE_KEYSTORE: ${{ github.workspace }}/keys/upload-keystore.jks
                   CARGO_APK_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.CARGO_APK_RELEASE_KEYSTORE_PASSWORD }}
                   CARGO_APK_RELEASE_KEY_PASSWORD: ${{ secrets.CARGO_APK_RELEASE_KEY_PASSWORD }}
               run: cargo apk build --release -p demo --lib
