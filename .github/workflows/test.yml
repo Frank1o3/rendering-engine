@@ -22,15 +22,15 @@ jobs:
             - name: Load Android keystore password
               shell: bash
               env:
-                  ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+                  CARGO_APK_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.CARGO_APK_RELEASE_KEYSTORE_PASSWORD }}
               run: |
-                  echo "Keystore password length: ${#ANDROID_KEYSTORE_PASSWORD}"
+                  echo "Keystore password length: ${#CARGO_APK_RELEASE_KEYSTORE_PASSWORD}"
 
             - name: Validate Android keystore
               shell: bash
               env:
-                  ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+                  CARGO_APK_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.CARGO_APK_RELEASE_KEYSTORE_PASSWORD }}
               run: |
                   keytool -list \
                     -keystore keys/upload-keystore.jks \
-                    -storepass "$ANDROID_KEYSTORE_PASSWORD"
+                    -storepass "$CARGO_APK_RELEASE_KEYSTORE_PASSWORD"
