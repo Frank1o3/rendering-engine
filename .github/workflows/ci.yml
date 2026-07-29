@@ -1,11 +1,22 @@
-name: Android APK Build
+name: Build Release
 
 on:
     workflow_dispatch:
 
+permissions:
+    contents: write
+
 jobs:
     build:
-        runs-on: ubuntu-latest
+        strategy:
+            matrix:
+                include:
+                    - os: ubuntu-latest
+                      target: android
+                    - os: windows-latest
+                      target: windows
+
+        runs-on: ${{ matrix.os }}
 
         env:
             ANDROID_NDK_VERSION: 26.3.11579264
@@ -14,31 +25,76 @@ jobs:
             - uses: actions/checkout@v7
 
             - uses: dtolnay/rust-toolchain@stable
-              with:
-                  targets: |
-                      aarch64-linux-android
-                      armv7-linux-androideabi
+
+            ####################################################################
+            # Android
+            ####################################################################
+
+            - name: Add Android targets
+              if: matrix.target == 'android'
+              run: |
+                  rustup target add aarch64-linux-android
+                  rustup target add armv7-linux-androideabi
 
             - uses: android-actions/setup-android@v4
+              if: matrix.target == 'android'
 
-            - name: Install NDK
+            - name: Install Android NDK
+              if: matrix.target == 'android'
               run: sdkmanager "ndk;$ANDROID_NDK_VERSION"
 
-            - name: Set NDK path
+            - name: Configure NDK
+              if: matrix.target == 'android'
+              shell: bash
               run: |
                   echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/$ANDROID_NDK_VERSION" >> $GITHUB_ENV
                   echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/$ANDROID_NDK_VERSION" >> $GITHUB_ENV
 
             - name: Install cargo-apk
+              if: matrix.target == 'android'
               run: cargo install cargo-apk
 
-            - name: Build APK
-              run: cargo apk build -p demo --lib
+            - name: Build Android APK
+              if: matrix.target == 'android'
+              run: cargo apk build --release -p demo --lib
 
-            - name: Upload APK
+            - name: Upload Android Artifact
+              if: matrix.target == 'android'
               uses: actions/upload-artifact@v7
               with:
-                  name: demo
-                  path: |
-                      target/debug/apk/*.apk
-                      target/release/apk/*.apk
+                  name: android-apk
+                  path: target/release/apk/*.apk
+
+            ####################################################################
+            # Windows
+            ####################################################################
+
+            - name: Build Windows Desktop
+              if: matrix.target == 'windows'
+              run: cargo build --release -p demo --bin desktop
+
+            - name: Upload Windows Artifact
+              if: matrix.target == 'windows'
+              uses: actions/upload-artifact@v7
+              with:
+                  name: windows-desktop
+                  path: target/release/desktop.exe
+
+    release:
+        needs: build
+        runs-on: ubuntu-latest
+
+        steps:
+            - uses: actions/download-artifact@v8
+              with:
+                  path: artifacts
+
+            - uses: softprops/action-gh-release@v3
+              with:
+                  tag_name: beta-${{ github.run_number }}
+                  name: Beta Build ${{ github.run_number }}
+                  prerelease: true
+                  generate_release_notes: true
+                  files: |
+                      artifacts/android-apk/*.apk
+                      artifacts/windows-desktop/desktop.exe
