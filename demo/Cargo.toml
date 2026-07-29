@@ -15,8 +15,6 @@
 
         [package.metadata.android.signing.release]
             key_alias="upload"
-            key_password="env:ANDROID_KEY_PASSWORD"
-            keystore_password="env:ANDROID_KEYSTORE_PASSWORD"
             path="../keys/upload-keystore.jks"
 
 [lib]
