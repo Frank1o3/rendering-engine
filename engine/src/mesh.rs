@@ -1,3 +1,4 @@
+use crate::free_list::Allocation;
 use bytemuck::{Pod, Zeroable};
 
 /// 20-byte vertex: position (12) + normal (4, packed i8) + color (4).
@@ -116,7 +117,8 @@ impl MeshData {
 }
 
 /// A mesh is a lightweight view into the shared `GeometryPool`.
-/// It owns no GL resources — created by `Renderer::load_mesh`.
+/// It owns no GL resources directly — created by `Renderer::load_mesh`,
+/// released by `Renderer::unload_mesh`.
 #[derive(Clone, Copy, Debug)]
 pub struct Mesh {
     pub base_vertex: i32,
@@ -125,4 +127,6 @@ pub struct Mesh {
     /// Conservative bounding sphere radius in local space.
     /// Used for CPU-side frustum culling before submitting to the renderer.
     pub bounding_radius: f32,
+    pub(crate) vertex_alloc: Allocation,
+    pub(crate) index_alloc: Allocation,
 }

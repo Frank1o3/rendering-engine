@@ -1,5 +1,7 @@
 // src/input.rs
 
+use std::sync::atomic::Ordering;
+
 use winit::{
     event::{DeviceEvent, ElementState, WindowEvent},
     keyboard::{KeyCode, PhysicalKey},
@@ -25,6 +27,9 @@ pub fn window_event(state: &mut DemoState, pending_grab: &mut bool, event: &Wind
 
                     KeyCode::Space => state.keys.space = pressed,
                     KeyCode::ControlLeft => state.keys.lctrl = pressed,
+                    KeyCode::KeyE if pressed => {
+                        state.vsync_enabled.fetch_xor(true, Ordering::Relaxed);
+                    }
 
                     KeyCode::Escape if pressed => {
                         if state.cursor_grabbed {
@@ -64,6 +69,18 @@ pub fn window_event(state: &mut DemoState, pending_grab: &mut bool, event: &Wind
                 }
 
                 winit::event::TouchPhase::Moved => {
+                    let x = touch.location.x as f32;
+                    let y = touch.location.y as f32;
+
+                    if touch.phase == winit::event::TouchPhase::Started
+                        && crate::touch::vsync_button_rect(state.width as f32, state.height as f32)
+                            .contains(x, y)
+                    {
+                        state.vsync_enabled.fetch_xor(true, Ordering::Relaxed);
+                        state.touches.insert(touch.id, TouchKind::VsyncToggle);
+                        return; // consumed — don't fall through to movement-button hit test
+                    }
+
                     if let Some(TouchKind::Look { last }) = state.touches.get_mut(&touch.id) {
                         let dx = x - last.0;
                         let dy = y - last.1;

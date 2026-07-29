@@ -5,6 +5,7 @@ pub mod buffer;
 pub mod draw_indirect;
 pub mod engine;
 pub mod frame_data;
+pub mod free_list;
 pub mod geometry_pool;
 pub mod math;
 pub mod mesh;

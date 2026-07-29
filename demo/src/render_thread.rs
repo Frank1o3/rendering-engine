@@ -12,6 +12,9 @@
 // later," never stale or corrupted data.
 
 use std::ffi::CString;
+use std::num::NonZeroU32;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
 
@@ -23,6 +26,7 @@ use glutin::{
     surface::{GlSurface, Surface, SwapInterval, WindowSurface},
 };
 
+use log;
 use rendering_engine::{
     engine::Renderer,
     frame_data::FrameData,
@@ -32,6 +36,7 @@ use rendering_engine::{
 
 use glam::Vec3;
 
+use crate::meshes::create_vsync_button_mesh;
 use crate::{
     meshes::{
         create_button_quad_mesh, create_collectible_mesh, create_cube_mesh, create_quad_mesh,
@@ -59,6 +64,7 @@ pub fn start_render_thread(
     not_current: NotCurrentContext,
     surface: Surface<WindowSurface>,
     read_handle: ReadHandle<FrameData>,
+    vsync_enabled: Arc<AtomicBool>,
 ) -> (
     SyncSender<RenderCommand>,
     Receiver<Assets>,
@@ -91,6 +97,7 @@ pub fn start_render_thread(
         let cube_mesh = renderer.load_mesh(create_cube_mesh());
         let quad_mesh = renderer.load_mesh(create_quad_mesh());
         let button_quad_mesh = renderer.load_mesh(create_button_quad_mesh());
+        let vsync_button_mesh = renderer.load_mesh(create_vsync_button_mesh());
         let collectible_mesh = renderer.load_mesh(create_collectible_mesh());
 
         let shader_map = renderer
@@ -120,10 +127,11 @@ pub fn start_render_thread(
         renderer.upload_shader_f32(lit_shader, "uAmbient", 0.18);
 
         let assets = Assets {
-            cube_mesh,
-            quad_mesh,
-            button_quad_mesh,
-            collectible_mesh,
+            cube_mesh: cube_mesh.expect("cube mesh should be loaded"),
+            quad_mesh: quad_mesh.expect("quad mesh should be loaded"),
+            button_quad_mesh: button_quad_mesh.expect("button quad mesh should be loaded"),
+            vsync_button_mesh: vsync_button_mesh.expect("vsync button quad mesh should be loaded"),
+            collectible_mesh: collectible_mesh.expect("collectible mesh should be loaded"),
             lit_material,
             ui_material,
             lit_shader,
@@ -133,12 +141,30 @@ pub fn start_render_thread(
             // Main thread already gone.
             return;
         }
+        let mut current_vsync = false; // cache to avoid spamming set_swap_interval
 
         // ── Main render loop ────────────────────────────────────────────
         loop {
             match cmd_rx.recv() {
                 Ok(RenderCommand::Render) => {
                     renderer.render();
+                    // Check vsync state and update if changed
+                    let new_vsync = vsync_enabled.load(Ordering::Relaxed);
+
+                    if new_vsync != current_vsync {
+                        let interval = if new_vsync {
+                            SwapInterval::Wait(NonZeroU32::new(1).unwrap())
+                        } else {
+                            SwapInterval::DontWait
+                        };
+                        if let Err(e) = surface.set_swap_interval(&gl_context, interval) {
+                            log::error!("set_swap_interval failed: {e:?}");
+                        } else {
+                            current_vsync = new_vsync;
+                            log::info!("Set vsync to: {}", current_vsync);
+                        }
+                    }
+
                     if let Err(e) = surface.swap_buffers(&gl_context) {
                         log::error!("swap_buffers failed: {e:?}");
                     }

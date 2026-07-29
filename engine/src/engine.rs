@@ -169,10 +169,25 @@ impl Renderer {
         self.mdi_strategy = strategy;
     }
 
-    pub fn load_mesh(&mut self, mut data: MeshData) -> MeshId {
-        let radius = data.bounding_radius();
+    pub fn load_mesh(&mut self, mut data: MeshData) -> Option<MeshId> {
         data.fix_winding();
-        let range = self.geometry_pool.upload(&data);
+        self.insert_mesh(data)
+    }
+
+    /// Like `load_mesh`, but skips winding correction. `fix_winding` flips
+    /// triangles based on a single whole-mesh centroid — correct for convex
+    /// meshes (cubes, quads) but wrong for concave geometry like a voxel
+    /// chunk, where a face can legitimately point away from the chunk's
+    /// overall centroid while still being correctly wound. Use this for
+    /// callers (the voxel mesher) that already guarantee correct per-face
+    /// CCW winding.
+    pub fn load_mesh_trusted_winding(&mut self, data: MeshData) -> Option<MeshId> {
+        self.insert_mesh(data)
+    }
+
+    fn insert_mesh(&mut self, data: MeshData) -> Option<MeshId> {
+        let radius = data.bounding_radius();
+        let range = self.geometry_pool.upload(&data)?;
 
         let id = MeshId(self.next_mesh_id);
         self.next_mesh_id += 1;
@@ -183,9 +198,45 @@ impl Renderer {
                 first_index: range.first_index,
                 index_count: range.index_count,
                 bounding_radius: radius,
+                vertex_alloc: range.vertex_alloc,
+                index_alloc: range.index_alloc,
             },
         );
-        id
+        Some(id)
+    }
+
+    /// Frees a mesh's GPU-side storage and removes it from the mesh table.
+    ///
+    /// Caller's responsibility: remove any `Scene` objects or dynamic
+    /// `RenderCommand`s that still reference this `MeshId` *before* calling
+    /// this. The renderer doesn't scan the scene to null out dangling
+    /// references — that would mean an O(objects) walk on every chunk
+    /// unload, which defeats the point of a streaming world.
+    pub fn unload_mesh(&mut self, mesh_id: MeshId) {
+        if let Some(mesh) = self.meshes.remove(&mesh_id) {
+            self.geometry_pool.free(crate::geometry_pool::MeshRange {
+                base_vertex: mesh.base_vertex,
+                first_index: mesh.first_index,
+                index_count: mesh.index_count,
+                vertex_alloc: mesh.vertex_alloc,
+                index_alloc: mesh.index_alloc,
+            });
+        }
+    }
+
+    /// (vertex, index) free-space stats — useful on a debug HUD to watch
+    /// pool pressure as chunks stream in/out.
+    pub fn mesh_pool_stats(&self) -> ((usize, usize), (usize, usize)) {
+        (
+            (
+                self.geometry_pool.free_vertex_space(),
+                self.geometry_pool.largest_free_vertex_block(),
+            ),
+            (
+                self.geometry_pool.free_index_space(),
+                self.geometry_pool.largest_free_index_block(),
+            ),
+        )
     }
 
     pub fn load_shader(&mut self, vs: &str, gs: Option<&str>, fs: &str) -> ShaderId {

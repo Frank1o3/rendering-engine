@@ -1,5 +1,5 @@
 // demo/src/renderer_setup.rs
-use std::sync::Arc;
+use std::sync::{Arc, atomic::AtomicBool};
 
 use glutin::{
     config::{ConfigTemplateBuilder, GlConfig},
@@ -26,6 +26,7 @@ use std::time::Instant;
 /// hands the context off to a dedicated render thread. The main thread never
 /// makes the context current and never issues a GL call itself.
 pub fn create_demo_state(event_loop: &ActiveEventLoop) -> DemoState {
+    let vsync_enabled = Arc::new(AtomicBool::new(false));
     let template = ConfigTemplateBuilder::new();
 
     let window_attributes = Window::default_attributes()
@@ -70,7 +71,7 @@ pub fn create_demo_state(event_loop: &ActiveEventLoop) -> DemoState {
     let (write_handle, read_handle) = new_triple_buffer::<FrameData>();
 
     let (render_tx, assets_rx, render_thread_handle) =
-        start_render_thread(not_current, gl_surface, read_handle);
+        start_render_thread(not_current, gl_surface, read_handle, vsync_enabled.clone());
 
     // Block once, briefly, until the render thread has compiled shaders and
     // uploaded the starting meshes — the game thread needs those IDs before
@@ -109,5 +110,6 @@ pub fn create_demo_state(event_loop: &ActiveEventLoop) -> DemoState {
         touches: HashMap::<u64, TouchKind>::new(),
 
         game: GameState::new(),
+        vsync_enabled,
     }
 }

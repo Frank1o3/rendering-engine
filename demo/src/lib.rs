@@ -9,6 +9,7 @@ mod renderer_setup;
 mod shaders;
 mod state;
 mod touch;
+// mod voxel; -- working on making the demo a smoll minecraft like game
 
 #[cfg(target_os = "android")]
 mod android {

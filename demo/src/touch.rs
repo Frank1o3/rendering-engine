@@ -36,11 +36,17 @@ impl Rect {
 /// - Dragging to rotate the camera.
 pub enum TouchKind {
     Button(ButtonId),
+    VsyncToggle,
     Look { last: (f32, f32) },
 }
 
 /// Camera sensitivity for touch look.
 pub const TOUCH_LOOK_SENSITIVITY: f32 = 0.004;
+
+/// Vsync toggle button — smaller than the movement buttons, top-right corner,
+/// clear of both the look-drag area and the D-pad/up-down cluster.
+pub const VSYNC_BTN: f32 = 96.0;
+pub const VSYNC_MARGIN: f32 = 32.0;
 
 /// Button layout constants.
 pub const BTN: f32 = 172.0;
@@ -127,6 +133,15 @@ pub fn button_rects(width: f32, height: f32) -> [(ButtonId, Rect); 6] {
             },
         ),
     ]
+}
+
+pub fn vsync_button_rect(width: f32, _height: f32) -> Rect {
+    Rect {
+        x: width - VSYNC_MARGIN - VSYNC_BTN,
+        y: VSYNC_MARGIN,
+        w: VSYNC_BTN,
+        h: VSYNC_BTN,
+    }
 }
 
 /// Updates the keyboard movement state from a virtual button.

@@ -1,7 +1,7 @@
 // demo/src/state.rs
 use std::{
     collections::HashMap,
-    sync::{mpsc::SyncSender, Arc},
+    sync::{Arc, atomic::AtomicBool, mpsc::SyncSender},
     thread::JoinHandle,
     time::Instant,
 };
@@ -62,6 +62,7 @@ pub struct Assets {
     pub cube_mesh: MeshId,
     pub quad_mesh: MeshId,
     pub button_quad_mesh: MeshId,
+    pub vsync_button_mesh: MeshId,
     pub collectible_mesh: MeshId,
 
     pub lit_material: MaterialId,
@@ -111,6 +112,7 @@ pub struct DemoState {
     pub current_fps: f32,
     pub frame_count: u32,
     pub last_fps_update: Instant,
+    pub vsync_enabled: Arc<AtomicBool>,
 }
 
 impl DemoState {

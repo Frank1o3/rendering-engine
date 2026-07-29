@@ -177,6 +177,14 @@ pub fn build_frame(state: &mut DemoState) {
 
     // Android touch buttons
     if cfg!(target_os = "android") {
+        let r = crate::touch::vsync_button_rect(state.width as f32, state.height as f32);
+        frame.ui_commands.push(RenderCommand {
+            mesh_id: state.assets.vsync_button_mesh,
+            material_id: state.assets.ui_material,
+            position: Vec3::new(r.x, r.y, 0.0),
+            rotation: Quat::IDENTITY,
+            scale: r.w,
+        });
         for (_, rect) in button_rects(state.width as f32, state.height as f32) {
             frame.ui_commands.push(RenderCommand {
                 mesh_id: state.assets.button_quad_mesh,
