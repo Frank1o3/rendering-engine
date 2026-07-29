@@ -50,12 +50,24 @@ jobs:
                   echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/$ANDROID_NDK_VERSION" >> $GITHUB_ENV
                   echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/$ANDROID_NDK_VERSION" >> $GITHUB_ENV
 
+            - name: Restore Android keystore
+              if: matrix.target == 'android'
+              shell: bash
+              env:
+                  ANDROID_UPLOAD_KEYSTORE: ${{ secrets.ANDROID_UPLOAD_KEYSTORE }}
+              run: |
+                  mkdir -p keys
+                  printf '%s' "$ANDROID_UPLOAD_KEYSTORE" | base64 --decode > keys/upload-keystore.jks
+
             - name: Install cargo-apk
               if: matrix.target == 'android'
               run: cargo install cargo-apk
 
             - name: Build Android APK
               if: matrix.target == 'android'
+              env:
+                  ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+                  ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
               run: cargo apk build --release -p demo --lib
 
             - name: Upload Android Artifact

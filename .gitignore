@@ -21,6 +21,7 @@ target/
 .env
 .env.local
 *.env.*
+.envrc
 
 # Editors
 .vscode/
@@ -32,3 +33,7 @@ build/
 *.pyc
 *.class
 system.md
+
+keys/
+*.jks
+*.keystore
