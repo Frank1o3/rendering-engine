@@ -1,3 +1,4 @@
+// demo/src/app.rs
 use std::time::Instant;
 
 use winit::{
@@ -26,7 +27,7 @@ impl App {
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let mut state = DemoState::new(event_loop);
-        game::init(&mut state); // initialise game
+        game::init(&mut state);
         self.state = Some(state);
     }
 
@@ -43,6 +44,7 @@ impl ApplicationHandler for App {
 
         match &event {
             WindowEvent::CloseRequested => {
+                state.shutdown_render_thread();
                 std::process::exit(0);
             }
 
@@ -108,27 +110,16 @@ impl ApplicationHandler for App {
         }
 
         //
-        // GAME UPDATE & FRAME BUILD
+        // GAME UPDATE & FRAME BUILD (main thread — no GL calls here)
         //
         game::update(state, dt);
         game::build_frame(state);
 
-        // Upload lighting uniforms (must be done before render)
-        use glam::Vec3;
-        state.renderer.upload_shader_vec3(
-            state.assets.lit_shader,
-            "uSunDir",
-            Vec3::new(0.6, 0.8, 0.4).normalize(),
-        );
-        state
-            .renderer
-            .upload_shader_f32(state.assets.lit_shader, "uAmbient", 0.18);
-
         //
-        // RENDER
+        // Hand off to the render thread. It reads the frame we just
+        // published through the triple buffer and swaps buffers itself.
         //
-        state.renderer.render();
-        state.render();
+        state.request_render();
 
         //
         // Request next frame

@@ -1,43 +1,33 @@
-// src/renderer_setup.rs
+// demo/src/renderer_setup.rs
+use std::sync::Arc;
 
-use std::{ffi::CString, sync::Arc};
-
-use glow::Context;
 use glutin::{
     config::{ConfigTemplateBuilder, GlConfig},
-    context::{ContextApi, ContextAttributesBuilder, NotCurrentGlContext, Version},
+    context::{ContextApi, ContextAttributesBuilder, Version},
     display::{GetGlDisplay, GlDisplay},
-    surface::{GlSurface, SwapInterval},
 };
 use glutin_winit::{DisplayBuilder, GlWindow};
 use raw_window_handle::HasWindowHandle;
 use winit::{dpi::PhysicalSize, event_loop::ActiveEventLoop, window::Window};
 
-use rendering_engine::{
-    engine::Renderer,
-    frame_data::FrameData,
-    pipeline::{BlendFactor, CullMode, DepthFunc, PipelineState},
-    triple_buffer::new_triple_buffer,
-};
+use rendering_engine::{frame_data::FrameData, triple_buffer::new_triple_buffer};
 
 use crate::{
-    meshes::{
-        create_button_quad_mesh, create_collectible_mesh, create_cube_mesh, create_quad_mesh,
-    },
-    shaders::SHADERS,
-    state::{Assets, DemoState, Keys},
+    render_thread::start_render_thread,
+    state::{DemoState, GameState, Keys},
+    touch::TouchKind,
 };
 
 use glam::Vec3;
+use std::collections::HashMap;
+use std::time::Instant;
 
-use std::{collections::HashMap, time::Instant};
+/// Builds the window/GL surface/context on the main thread, then immediately
+/// hands the context off to a dedicated render thread. The main thread never
+/// makes the context current and never issues a GL call itself.
+pub fn create_demo_state(event_loop: &ActiveEventLoop) -> DemoState {
+    let template = ConfigTemplateBuilder::new();
 
-use crate::touch::TouchKind;
-
-pub fn create_demo_state(
-    event_loop: &ActiveEventLoop,
-    template: ConfigTemplateBuilder,
-) -> DemoState {
     let window_attributes = Window::default_attributes()
         .with_title("Rendering Engine — OpenGL ES 3.2 3D Demo")
         .with_inner_size(PhysicalSize::new(1280, 720))
@@ -67,6 +57,7 @@ pub fn create_demo_state(
         .with_context_api(ContextApi::Gles(Some(Version { major: 3, minor: 2 })))
         .build(Some(window.window_handle().unwrap().as_raw()));
 
+    // NOT current here — ownership + make_current happen on the render thread.
     let not_current = unsafe {
         display
             .create_context(&gl_config, &context_attributes)
@@ -74,82 +65,28 @@ pub fn create_demo_state(
     };
 
     let attrs = window.build_surface_attributes(Default::default()).unwrap();
-
     let gl_surface = unsafe { display.create_window_surface(&gl_config, &attrs).unwrap() };
-
-    let gl_context = not_current.make_current(&gl_surface).unwrap();
-
-    gl_surface
-        .set_swap_interval(&gl_context, SwapInterval::DontWait)
-        .unwrap();
-
-    let gl = unsafe {
-        Context::from_loader_function(|sym| display.get_proc_address(&CString::new(sym).unwrap()))
-    };
 
     let (write_handle, read_handle) = new_triple_buffer::<FrameData>();
 
-    let mut renderer = Renderer::new(gl, read_handle);
+    let (render_tx, assets_rx, render_thread_handle) =
+        start_render_thread(not_current, gl_surface, read_handle);
 
-    //
-    // Meshes
-    //
-
-    let cube_mesh = renderer.load_mesh(create_cube_mesh());
-    let quad_mesh = renderer.load_mesh(create_quad_mesh());
-    let button_quad_mesh = renderer.load_mesh(create_button_quad_mesh());
-    let collectible_mesh = renderer.load_mesh(create_collectible_mesh());
-
-    //
-    // Shaders
-    //
-
-    let shader_map = renderer
-        .load_shaders_from_include_dir(&SHADERS)
-        .expect("Failed to load shaders");
-
-    let lit_shader = *shader_map.get("lit").expect("Missing lit shader");
-    let ui_shader = *shader_map.get("ui").expect("Missing ui shader");
-
-    //
-    // Materials
-    //
-
-    let lit_material =
-        renderer.create_material(lit_shader, PipelineState::default_opaque(lit_shader.0));
-
-    let ui_pipeline = PipelineState {
-        shader_id: ui_shader.0,
-        cull_mode: CullMode::None,
-        depth_test: true,
-        depth_write: false,
-        depth_func: DepthFunc::Less,
-        blend_enabled: true,
-        src_factor: BlendFactor::SrcAlpha,
-        dst_factor: BlendFactor::OneMinusSrcAlpha,
-    };
-
-    let ui_material = renderer.create_material(ui_shader, ui_pipeline);
+    // Block once, briefly, until the render thread has compiled shaders and
+    // uploaded the starting meshes — the game thread needs those IDs before
+    // it can build its first FrameData.
+    let assets = assets_rx
+        .recv()
+        .expect("Render thread closed before sending initial assets");
 
     DemoState {
         window,
-        gl_context,
-        gl_surface,
 
-        renderer,
+        render_tx,
+        render_thread_handle: Some(render_thread_handle),
         write_handle,
 
-        assets: Assets {
-            cube_mesh,
-            quad_mesh,
-            button_quad_mesh,
-            collectible_mesh,
-
-            lit_material,
-            ui_material,
-
-            lit_shader,
-        },
+        assets,
 
         width: 1280,
         height: 720,
@@ -171,6 +108,6 @@ pub fn create_demo_state(
 
         touches: HashMap::<u64, TouchKind>::new(),
 
-        game: crate::state::GameState::new(), // placeholder, will be overwritten in init
+        game: GameState::new(),
     }
 }

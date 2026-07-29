@@ -1,8 +1,10 @@
+// demo/src/lib.rs
 pub mod app;
 mod font;
 mod game;
 mod input;
 mod meshes;
+mod render_thread;
 mod renderer_setup;
 mod shaders;
 mod state;

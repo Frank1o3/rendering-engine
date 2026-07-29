@@ -1,23 +1,22 @@
-// src/state.rs
-
-use std::{collections::HashMap, sync::Arc, time::Instant};
+// demo/src/state.rs
+use std::{
+    collections::HashMap,
+    sync::{mpsc::SyncSender, Arc},
+    thread::JoinHandle,
+    time::Instant,
+};
 
 use glam::Vec3;
-use glutin::{
-    config::ConfigTemplateBuilder,
-    context::PossiblyCurrentContext,
-    surface::{Surface, WindowSurface},
-};
 use winit::window::Window;
 
 use rendering_engine::{
-    engine::{MaterialId, MeshId, Renderer, ShaderId},
+    engine::{MaterialId, MeshId, ShaderId},
     frame_data::FrameData,
     triple_buffer::WriteHandle,
 };
 use winit::event_loop::ActiveEventLoop;
 
-use crate::touch::TouchKind;
+use crate::{render_thread::RenderCommand, touch::TouchKind};
 
 /// Current keyboard movement state.
 #[derive(Default, Debug)]
@@ -57,7 +56,8 @@ impl GameState {
     }
 }
 
-/// GPU assets used by the demo.
+/// GPU asset IDs handed back by the render thread once it finishes loading.
+/// These are plain `Copy` identifiers — no GL resources cross this boundary.
 pub struct Assets {
     pub cube_mesh: MeshId,
     pub quad_mesh: MeshId,
@@ -70,15 +70,15 @@ pub struct Assets {
     pub lit_shader: ShaderId,
 }
 
-/// Everything owned while the application is running.
+/// Everything owned by the main/game thread. Notably: no `Renderer`, no GL
+/// context, no surface — those live exclusively on the render thread now.
 pub struct DemoState {
-    // Window / OpenGL
+    // Window
     pub window: Arc<Window>,
-    pub gl_context: PossiblyCurrentContext,
-    pub gl_surface: Surface<WindowSurface>,
 
-    // Renderer
-    pub renderer: Renderer,
+    // Render-thread communication
+    pub render_tx: SyncSender<RenderCommand>,
+    pub render_thread_handle: Option<JoinHandle<()>>,
     pub write_handle: WriteHandle<FrameData>,
 
     // Assets
@@ -115,29 +115,34 @@ pub struct DemoState {
 
 impl DemoState {
     pub fn new(event_loop: &ActiveEventLoop) -> Self {
-        let template = ConfigTemplateBuilder::new();
-
-        crate::renderer_setup::create_demo_state(event_loop, template)
+        crate::renderer_setup::create_demo_state(event_loop)
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
-        use glutin::surface::GlSurface;
-
         self.width = width;
         self.height = height;
-
-        self.gl_surface.resize(
-            &self.gl_context,
-            width.try_into().unwrap(),
-            height.try_into().unwrap(),
-        );
-
-        self.renderer.resize(width as i32, height as i32);
+        // Rare event — fine to block briefly if the render thread is busy.
+        let _ = self.render_tx.send(RenderCommand::Resize(width, height));
     }
 
-    pub fn render(&mut self) {
-        use glutin::surface::GlSurface;
+    /// Pings the render thread to draw the most recently published frame.
+    /// Non-blocking: if a render request is already queued, this one is
+    /// dropped rather than piling up — the triple buffer guarantees the
+    /// render thread always sees the latest `FrameData` regardless.
+    pub fn request_render(&mut self) {
+        use std::sync::mpsc::TrySendError;
+        match self.render_tx.try_send(RenderCommand::Render) {
+            Ok(()) | Err(TrySendError::Full(_)) => {}
+            Err(TrySendError::Disconnected(_)) => {
+                log::error!("Render thread has disconnected");
+            }
+        }
+    }
 
-        self.gl_surface.swap_buffers(&self.gl_context).unwrap();
+    pub fn shutdown_render_thread(&mut self) {
+        let _ = self.render_tx.send(RenderCommand::Shutdown);
+        if let Some(handle) = self.render_thread_handle.take() {
+            let _ = handle.join();
+        }
     }
 }
