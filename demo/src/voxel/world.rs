@@ -1,10 +1,12 @@
+// demo/src/voxel/world.rs
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use glam::Vec3;
 
-use super::chunk::{CHUNK_SIZE_X, CHUNK_SIZE_Z, Chunk, ChunkPos};
+use super::chunk::{CHUNK_SIZE_X, CHUNK_SIZE_Z, ChunkPos};
 use super::mesher::mesh_chunk;
 use super::worldgen::generate_chunk;
 use crate::render_thread::RenderCommand;
@@ -15,11 +17,6 @@ enum ChunkState {
     Loaded,
 }
 
-struct MeshTask {
-    pos: ChunkPos,
-    chunk: Chunk,
-}
-
 struct MeshReady {
     pos: ChunkPos,
 }
@@ -28,51 +25,61 @@ pub struct World {
     chunks: HashMap<ChunkPos, ChunkState>,
     render_distance: i32,
     player_chunk: ChunkPos,
-    mesh_tx: Sender<MeshTask>,
+    task_tx: Sender<ChunkPos>,
     ready_rx: Receiver<MeshReady>,
     render_tx: SyncSender<RenderCommand>,
 }
 
 impl World {
     pub fn new(render_distance: i32, render_tx: SyncSender<RenderCommand>) -> Self {
-        let (mesh_tx, mesh_rx) = mpsc::channel::<MeshTask>();
+        let (task_tx, task_rx) = mpsc::channel::<ChunkPos>();
         let (ready_tx, ready_rx) = mpsc::channel::<MeshReady>();
+        let task_rx = Arc::new(Mutex::new(task_rx));
 
-        // Single meshing worker. Chunks are moved (not cloned) into the task,
-        // meshed, and the resulting geometry is sent straight to the render
-        // thread — no round trip through the game thread's FrameData needed,
-        // since a chunk is a Scene object (see render_thread::AddChunk), not
-        // a per-frame RenderCommand.
-        let worker_render_tx = render_tx.clone();
-        thread::spawn(move || {
-            for task in mesh_rx {
-                let mesh = mesh_chunk(&task.chunk, |_, _, _| false);
-                // Treating out-of-chunk neighbors as "not solid" means a
-                // chunk boundary face always renders — safe (no holes), at
-                // the cost of some hidden geometry at seams until real
-                // cross-chunk neighbor lookups are added.
-                if !mesh.indices.is_empty() {
-                    let _ = worker_render_tx.send(RenderCommand::AddChunk {
-                        pos: task.pos,
-                        mesh,
-                    });
+        // Each worker fully owns a chunk end-to-end (generate + greedy-mesh)
+        // and never touches another chunk's data, so this scales cleanly
+        // with core count — no locking needed except the brief task-queue pop.
+        let worker_count = thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .clamp(2, 8);
+
+        for _ in 0..worker_count {
+            let task_rx = task_rx.clone();
+            let ready_tx = ready_tx.clone();
+            let render_tx = render_tx.clone();
+
+            thread::spawn(move || {
+                loop {
+                    let pos = {
+                        let rx = task_rx.lock().unwrap();
+                        match rx.recv() {
+                            Ok(pos) => pos,
+                            Err(_) => break, // World dropped
+                        }
+                    };
+
+                    let chunk = generate_chunk(pos);
+                    let mesh = mesh_chunk(&chunk, |_, _, _| false);
+
+                    if !mesh.indices.is_empty() {
+                        let _ = render_tx.send(RenderCommand::AddChunk { pos, mesh });
+                    }
+                    if ready_tx.send(MeshReady { pos }).is_err() {
+                        break;
+                    }
                 }
-                if ready_tx.send(MeshReady { pos: task.pos }).is_err() {
-                    break;
-                }
-            }
-        });
+            });
+        }
 
         Self {
             chunks: HashMap::new(),
             render_distance,
-            // Sentinel forces the first update() to always run the full
-            // load pass, regardless of starting position.
             player_chunk: ChunkPos {
                 x: i32::MAX,
                 z: i32::MAX,
             },
-            mesh_tx,
+            task_tx,
             ready_rx,
             render_tx,
         }
@@ -83,15 +90,12 @@ impl World {
         let pz = (player_pos.z / CHUNK_SIZE_Z as f32).floor() as i32;
         let player_chunk = ChunkPos { x: px, z: pz };
 
-        // Drain finished meshing jobs first — flips Loading -> Loaded so the
-        // removal pass below never yanks a chunk out from under an in-flight
-        // AddChunk that's still on its way to the render thread.
         while let Ok(MeshReady { pos }) = self.ready_rx.try_recv() {
             self.chunks.insert(pos, ChunkState::Loaded);
         }
 
         if player_chunk == self.player_chunk {
-            return; // Same chunk as last update — nothing to load/unload.
+            return;
         }
         self.player_chunk = player_chunk;
 
@@ -123,8 +127,7 @@ impl World {
                 continue;
             }
             self.chunks.insert(pos, ChunkState::Loading);
-            let chunk = generate_chunk(pos);
-            let _ = self.mesh_tx.send(MeshTask { pos, chunk });
+            let _ = self.task_tx.send(pos);
         }
     }
 }
