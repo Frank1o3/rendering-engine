@@ -14,13 +14,15 @@ use rendering_engine::{frame_data::FrameData, triple_buffer::new_triple_buffer};
 
 use crate::{
     render_thread::start_render_thread,
-    state::{DemoState, GameState, Keys},
-    touch::TouchKind,
+    state::{DemoState, Keys},
+    voxel::world::World,
 };
 
 use glam::Vec3;
 use std::collections::HashMap;
 use std::time::Instant;
+
+const RENDER_DISTANCE: i32 = 8; // 17×17 chunks, full 0..256 height each
 
 /// Builds the window/GL surface/context on the main thread, then immediately
 /// hands the context off to a dedicated render thread. The main thread never
@@ -80,36 +82,27 @@ pub fn create_demo_state(event_loop: &ActiveEventLoop) -> DemoState {
         .recv()
         .expect("Render thread closed before sending initial assets");
 
+    let world = World::new(RENDER_DISTANCE, render_tx.clone());
+
     DemoState {
         window,
-
         render_tx,
         render_thread_handle: Some(render_thread_handle),
         write_handle,
-
         assets,
-
         width: 1280,
         height: 720,
-
-        camera_pos: Vec3::new(0.0, 1.0, 5.0),
+        camera_pos: Vec3::new(0.0, 80.0, 0.0), // above typical terrain height so you spawn looking down at the world
         camera_yaw: 0.0,
         camera_pitch: 0.0,
-
         keys: Keys::default(),
         cursor_grabbed: false,
-
-        dyn_angle: 0.0,
-
+        touches: HashMap::new(),
+        world,
         last_frame: Instant::now(),
-
         current_fps: 0.0,
         frame_count: 0,
         last_fps_update: Instant::now(),
-
-        touches: HashMap::<u64, TouchKind>::new(),
-
-        game: GameState::new(),
         vsync_enabled,
     }
 }

@@ -1,4 +1,3 @@
-// demo/src/state.rs
 use std::{
     collections::HashMap,
     sync::{Arc, atomic::AtomicBool, mpsc::SyncSender},
@@ -7,18 +6,16 @@ use std::{
 };
 
 use glam::Vec3;
-use winit::window::Window;
+use winit::{event_loop::ActiveEventLoop, window::Window};
 
 use rendering_engine::{
     engine::{MaterialId, MeshId, ShaderId},
     frame_data::FrameData,
     triple_buffer::WriteHandle,
 };
-use winit::event_loop::ActiveEventLoop;
 
-use crate::{render_thread::RenderCommand, touch::TouchKind};
+use crate::{render_thread::RenderCommand, touch::TouchKind, voxel::world::World};
 
-/// Current keyboard movement state.
 #[derive(Default, Debug)]
 pub struct Keys {
     pub w: bool,
@@ -29,86 +26,41 @@ pub struct Keys {
     pub lctrl: bool,
 }
 
-/// A single collectible object.
-#[derive(Debug, Clone)]
-pub struct Collectible {
-    pub position: Vec3,
-    pub scale: f32,
-}
-
-/// All game‑specific state.
-#[derive(Debug)]
-pub struct GameState {
-    pub score: u32,
-    pub collectibles: Vec<Collectible>,
-    pub spawn_radius: f32,
-    pub collect_distance: f32,
-}
-
-impl GameState {
-    pub fn new() -> Self {
-        Self {
-            score: 0,
-            collectibles: Vec::new(),
-            spawn_radius: 8.0,
-            collect_distance: 0.8,
-        }
-    }
-}
-
-/// GPU asset IDs handed back by the render thread once it finishes loading.
-/// These are plain `Copy` identifiers — no GL resources cross this boundary.
+/// Startup-only GPU asset IDs. Terrain meshes are NOT here — they stream in
+/// per-chunk and are tracked entirely on the render thread.
 pub struct Assets {
-    pub cube_mesh: MeshId,
     pub quad_mesh: MeshId,
     pub button_quad_mesh: MeshId,
     pub vsync_button_mesh: MeshId,
-    pub collectible_mesh: MeshId,
-
-    pub lit_material: MaterialId,
+    pub terrain_material: MaterialId,
     pub ui_material: MaterialId,
-
     pub lit_shader: ShaderId,
 }
 
-/// Everything owned by the main/game thread. Notably: no `Renderer`, no GL
-/// context, no surface — those live exclusively on the render thread now.
 pub struct DemoState {
-    // Window
     pub window: Arc<Window>,
 
-    // Render-thread communication
     pub render_tx: SyncSender<RenderCommand>,
     pub render_thread_handle: Option<JoinHandle<()>>,
     pub write_handle: WriteHandle<FrameData>,
 
-    // Assets
     pub assets: Assets,
 
-    // Window size
     pub width: u32,
     pub height: u32,
 
-    // Camera
+    // Fly camera — no gravity or collision. Exploration only.
     pub camera_pos: Vec3,
     pub camera_yaw: f32,
     pub camera_pitch: f32,
 
-    // Input
     pub keys: Keys,
     pub cursor_grabbed: bool,
     pub touches: HashMap<u64, TouchKind>,
 
-    // Game
-    pub game: GameState,
+    pub world: World,
 
-    // Demo animation
-    pub dyn_angle: f32,
-
-    // Timing
     pub last_frame: Instant,
-
-    // FPS counter
     pub current_fps: f32,
     pub frame_count: u32,
     pub last_fps_update: Instant,
@@ -123,21 +75,14 @@ impl DemoState {
     pub fn resize(&mut self, width: u32, height: u32) {
         self.width = width;
         self.height = height;
-        // Rare event — fine to block briefly if the render thread is busy.
         let _ = self.render_tx.send(RenderCommand::Resize(width, height));
     }
 
-    /// Pings the render thread to draw the most recently published frame.
-    /// Non-blocking: if a render request is already queued, this one is
-    /// dropped rather than piling up — the triple buffer guarantees the
-    /// render thread always sees the latest `FrameData` regardless.
     pub fn request_render(&mut self) {
         use std::sync::mpsc::TrySendError;
         match self.render_tx.try_send(RenderCommand::Render) {
             Ok(()) | Err(TrySendError::Full(_)) => {}
-            Err(TrySendError::Disconnected(_)) => {
-                log::error!("Render thread has disconnected");
-            }
+            Err(TrySendError::Disconnected(_)) => log::error!("Render thread has disconnected"),
         }
     }
 

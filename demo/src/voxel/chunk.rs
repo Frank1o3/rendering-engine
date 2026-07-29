@@ -1,5 +1,7 @@
 // src/voxel/chunk.rs
 
+use glam::Vec3;
+
 use super::block::BlockId;
 
 pub const CHUNK_SIZE_X: usize = 16;
@@ -14,6 +16,19 @@ const BLOCKS_PER_CHUNK: usize = CHUNK_SIZE_X * CHUNK_SIZE_Z * CHUNK_HEIGHT;
 pub struct ChunkPos {
     pub x: i32,
     pub z: i32,
+}
+
+impl ChunkPos {
+    /// World-space origin of this chunk's (0,0,0) corner.
+    /// Mesh vertices from `mesh_chunk` are chunk-local, so this is what
+    /// positions the chunk's whole-mesh Scene object correctly.
+    pub fn world_origin(&self) -> Vec3 {
+        Vec3::new(
+            (self.x * CHUNK_SIZE_X as i32) as f32,
+            0.0,
+            (self.z * CHUNK_SIZE_Z as i32) as f32,
+        )
+    }
 }
 
 /// A single 16×256×16 block column. Flat `Vec<BlockId>` storage for now —

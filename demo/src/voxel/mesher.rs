@@ -4,14 +4,13 @@
 // Merges adjacent coplanar faces into larger quads to reduce draw calls.
 // Produces a MeshData with correct normals and CCW winding.
 
-use super::block::BlockId;
-use super::chunk::{Chunk, CHUNK_HEIGHT, CHUNK_SIZE_X, CHUNK_SIZE_Z};
+use super::chunk::{CHUNK_HEIGHT, CHUNK_SIZE_X, CHUNK_SIZE_Z, Chunk};
 use rendering_engine::mesh::{MeshData, Vertex};
 
 #[derive(Clone, Copy)]
 struct Face {
     normal: [f32; 3],
-    dir: (i32, i32, i32),   // axis direction: ±x, ±y, ±z
+    dir: (i32, i32, i32),    // axis direction: ±x, ±y, ±z
     u_axis: (i32, i32, i32), // tangent axis for u
     v_axis: (i32, i32, i32), // tangent axis for v
 }
@@ -85,8 +84,20 @@ pub fn mesh_chunk(chunk: &Chunk, neighbor_solid: impl Fn(i32, i32, i32) -> bool)
         // We'll iterate over slices of the chunk along the face normal.
         // For each (u,v) coordinate, we check if the face is visible.
         // We'll use a 2D mask to mark which (u,v) positions have a visible face.
-        let u_size = if ux != 0 { CHUNK_SIZE_X } else if uy != 0 { CHUNK_HEIGHT } else { CHUNK_SIZE_Z };
-        let v_size = if vx != 0 { CHUNK_SIZE_X } else if vy != 0 { CHUNK_HEIGHT } else { CHUNK_SIZE_Z };
+        let u_size = if ux != 0 {
+            CHUNK_SIZE_X
+        } else if uy != 0 {
+            CHUNK_HEIGHT
+        } else {
+            CHUNK_SIZE_Z
+        };
+        let v_size = if vx != 0 {
+            CHUNK_SIZE_X
+        } else if vy != 0 {
+            CHUNK_HEIGHT
+        } else {
+            CHUNK_SIZE_Z
+        };
 
         // We'll store a 2D array of bool for visibility.
         let mut visible = vec![vec![false; v_size]; u_size];
@@ -107,8 +118,20 @@ pub fn mesh_chunk(chunk: &Chunk, neighbor_solid: impl Fn(i32, i32, i32) -> bool)
                         continue; // neighbor solid -> face not visible
                     }
                     // Compute u and v indices for this block's face.
-                    let u = if ux != 0 { x } else if uy != 0 { y } else { z };
-                    let v = if vx != 0 { x } else if vy != 0 { y } else { z };
+                    let u = if ux != 0 {
+                        x
+                    } else if uy != 0 {
+                        y
+                    } else {
+                        z
+                    };
+                    let v = if vx != 0 {
+                        x
+                    } else if vy != 0 {
+                        y
+                    } else {
+                        z
+                    };
                     visible[u][v] = true;
                 }
             }
@@ -157,12 +180,9 @@ pub fn mesh_chunk(chunk: &Chunk, neighbor_solid: impl Fn(i32, i32, i32) -> bool)
                 // The rectangle spans from (u_start, v_start) to (u_start+width, v_start+height) in the plane.
                 let u_start = u;
                 let v_start = v;
-                let u_end = u_start + width;
-                let v_end = v_start + height;
 
                 // Compute the block coordinates for each corner.
                 // We'll use a function to map (u,v) to (x,y,z) for a given face.
-                // We'll compute the four corners: (u_start, v_start), (u_end, v_start), (u_end, v_end), (u_start, v_end).
                 // For each corner, we need to know if it's the block's coordinate or the neighbor's coordinate.
                 // The face is at the boundary; we'll position the quad such that it lies exactly on the boundary.
                 // For positive direction, the face is at block coordinate + 1; for negative, at block coordinate.
@@ -229,16 +249,15 @@ pub fn mesh_chunk(chunk: &Chunk, neighbor_solid: impl Fn(i32, i32, i32) -> bool)
                 // For negative directions, we may need to reverse.
                 // We'll simply use the order that yields a normal pointing outward.
                 // Compute the normal from the quad edges: (c1-c0) x (c3-c0).
-                let e1 = glam::Vec3::new(c1[0]-c0[0], c1[1]-c0[1], c1[2]-c0[2]);
-                let e2 = glam::Vec3::new(c3[0]-c0[0], c3[1]-c0[1], c3[2]-c0[2]);
+                let e1 = glam::Vec3::new(c1[0] - c0[0], c1[1] - c0[1], c1[2] - c0[2]);
+                let e2 = glam::Vec3::new(c3[0] - c0[0], c3[1] - c0[1], c3[2] - c0[2]);
                 let n = e1.cross(e2).normalize_or_zero();
                 let desired = glam::Vec3::from(face.normal);
-                if n.dot(desired) < 0.0 {
-                    // Reverse winding by swapping c1 and c3.
-                    let (c1, c3) = (c3, c1);
-                    // Now the normal should be correct.
-                }
-                // Use the order: c0, c1, c2, c3 (CCW).
+                let (c1, c3) = if n.dot(desired) < 0.0 {
+                    (c3, c1)
+                } else {
+                    (c1, c3)
+                };
                 let corners = [c0, c1, c2, c3];
 
                 // Get block color from the first block of the quad.
@@ -276,7 +295,7 @@ pub fn mesh_chunk(chunk: &Chunk, neighbor_solid: impl Fn(i32, i32, i32) -> bool)
                 for &corner in &corners {
                     vertices.push(Vertex::new(corner, face.normal, color));
                 }
-                indices.extend_from_slice(&[base, base+1, base+2, base+2, base+3, base]);
+                indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 3, base]);
             }
         }
     }

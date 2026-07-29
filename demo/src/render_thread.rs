@@ -1,16 +1,4 @@
-// demo/src/render_thread.rs
-//
-// Owns the GL context, the surface, and the Renderer for the entire life of
-// the program. Nothing outside this thread is allowed to touch GL state.
-//
-// The game/main thread only ever talks to this thread through `RenderCommand`.
-// `Render` requests are sent through a capacity-1 `sync_channel` and pushed
-// with `try_send`: if the render thread hasn't drained the previous request
-// yet, we simply drop the new one instead of queuing up. That's safe because
-// the triple buffer always holds the *latest* published `FrameData` — a
-// dropped `Render` ping just means "render whatever's current a little
-// later," never stale or corrupted data.
-
+use std::collections::HashMap;
 use std::ffi::CString;
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -26,40 +14,33 @@ use glutin::{
     surface::{GlSurface, Surface, SwapInterval, WindowSurface},
 };
 
-use log;
 use rendering_engine::{
-    engine::Renderer,
+    MeshData, ObjectHandle, ObjectKind,
+    engine::{MeshId, Renderer},
     frame_data::FrameData,
     pipeline::{BlendFactor, CullMode, DepthFunc, PipelineState},
     triple_buffer::ReadHandle,
 };
 
-use glam::Vec3;
-
-use crate::meshes::create_vsync_button_mesh;
 use crate::{
-    meshes::{
-        create_button_quad_mesh, create_collectible_mesh, create_cube_mesh, create_quad_mesh,
-    },
+    meshes::{create_button_quad_mesh, create_quad_mesh, create_vsync_button_mesh},
     shaders::SHADERS,
     state::Assets,
+    voxel::chunk::ChunkPos,
 };
 
+/// Demo-only thread-control enum — distinct from
+/// `rendering_engine::frame_data::RenderCommand`, which stays untouched.
+/// `AddChunk`/`RemoveChunk` carry exactly what the engine needs (a mesh, a
+/// position) and nothing voxel-specific leaks past this file.
 pub enum RenderCommand {
     Render,
     Resize(u32, u32),
+    AddChunk { pos: ChunkPos, mesh: MeshData },
+    RemoveChunk { pos: ChunkPos },
     Shutdown,
 }
 
-/// Spawns the render thread.
-///
-/// Returns:
-/// - a `SyncSender` for issuing `RenderCommand`s,
-/// - a `Receiver` that yields exactly one `Assets` message once the render
-///   thread has finished compiling shaders and uploading the initial mesh
-///   set (the caller should block on this once before entering the event
-///   loop — the game thread needs those IDs to build its first frame),
-/// - the thread's `JoinHandle`.
 pub fn start_render_thread(
     not_current: NotCurrentContext,
     surface: Surface<WindowSurface>,
@@ -70,8 +51,9 @@ pub fn start_render_thread(
     Receiver<Assets>,
     thread::JoinHandle<()>,
 ) {
-    // Capacity 1: at most one pending "please render" ping in flight.
-    let (cmd_tx, cmd_rx) = mpsc::sync_channel(1);
+    // Capacity raised from 1: chunk streaming can burst several
+    // AddChunk/RemoveChunk sends per frame, unlike the old single Render ping.
+    let (cmd_tx, cmd_rx) = mpsc::sync_channel(64);
     let (assets_tx, assets_rx) = mpsc::channel();
 
     let handle = thread::spawn(move || {
@@ -93,12 +75,10 @@ pub fn start_render_thread(
 
         let mut renderer = Renderer::new(gl, read_handle);
 
-        // ── Assets (all GL work — must happen here, not on the main thread) ──
-        let cube_mesh = renderer.load_mesh(create_cube_mesh());
+        // UI-only startup assets — terrain streams in per-chunk below.
         let quad_mesh = renderer.load_mesh(create_quad_mesh());
         let button_quad_mesh = renderer.load_mesh(create_button_quad_mesh());
         let vsync_button_mesh = renderer.load_mesh(create_vsync_button_mesh());
-        let collectible_mesh = renderer.load_mesh(create_collectible_mesh());
 
         let shader_map = renderer
             .load_shaders_from_include_dir(&SHADERS)
@@ -107,7 +87,9 @@ pub fn start_render_thread(
         let lit_shader = *shader_map.get("lit").expect("Missing lit shader");
         let ui_shader = *shader_map.get("ui").expect("Missing ui shader");
 
-        let lit_material =
+        // Terrain reuses the lit pipeline as-is — a greedy-meshed chunk is
+        // just another opaque, per-vertex-colored mesh to the engine.
+        let terrain_material =
             renderer.create_material(lit_shader, PipelineState::default_opaque(lit_shader.0));
 
         let ui_pipeline = PipelineState {
@@ -122,65 +104,81 @@ pub fn start_render_thread(
         };
         let ui_material = renderer.create_material(ui_shader, ui_pipeline);
 
-        // Static lighting uniforms — set once, not per frame.
-        renderer.upload_shader_vec3(lit_shader, "uSunDir", Vec3::new(0.6, 0.8, 0.4).normalize());
-        renderer.upload_shader_f32(lit_shader, "uAmbient", 0.18);
+        renderer.upload_shader_vec3(
+            lit_shader,
+            "uSunDir",
+            glam::Vec3::new(0.6, 0.8, 0.4).normalize(),
+        );
+        renderer.upload_shader_f32(lit_shader, "uAmbient", 0.28);
 
         let assets = Assets {
-            cube_mesh: cube_mesh.expect("cube mesh should be loaded"),
             quad_mesh: quad_mesh.expect("quad mesh should be loaded"),
             button_quad_mesh: button_quad_mesh.expect("button quad mesh should be loaded"),
             vsync_button_mesh: vsync_button_mesh.expect("vsync button quad mesh should be loaded"),
-            collectible_mesh: collectible_mesh.expect("collectible mesh should be loaded"),
-            lit_material,
+            terrain_material,
             ui_material,
             lit_shader,
         };
 
         if assets_tx.send(assets).is_err() {
-            // Main thread already gone.
             return;
         }
-        let mut current_vsync = false; // cache to avoid spamming set_swap_interval
 
-        // ── Main render loop ────────────────────────────────────────────
+        let mut current_vsync = false;
+        // Tracks each loaded chunk's GPU-side identity so RemoveChunk can
+        // tear it down again. Lives here, not in Renderer — the engine has
+        // no concept of "chunk," only meshes and scene objects.
+        let mut chunk_objects: HashMap<ChunkPos, (MeshId, ObjectHandle)> = HashMap::new();
+
         loop {
             match cmd_rx.recv() {
                 Ok(RenderCommand::Render) => {
                     renderer.render();
-                    // Check vsync state and update if changed
-                    let new_vsync = vsync_enabled.load(Ordering::Relaxed);
 
+                    let new_vsync = vsync_enabled.load(Ordering::Relaxed);
                     if new_vsync != current_vsync {
                         let interval = if new_vsync {
                             SwapInterval::Wait(NonZeroU32::new(1).unwrap())
                         } else {
                             SwapInterval::DontWait
                         };
-                        if let Err(e) = surface.set_swap_interval(&gl_context, interval) {
-                            log::error!("set_swap_interval failed: {e:?}");
-                        } else {
+                        if surface.set_swap_interval(&gl_context, interval).is_ok() {
                             current_vsync = new_vsync;
-                            log::info!("Set vsync to: {}", current_vsync);
                         }
                     }
 
-                    if let Err(e) = surface.swap_buffers(&gl_context) {
-                        log::error!("swap_buffers failed: {e:?}");
-                    }
+                    let _ = surface.swap_buffers(&gl_context);
                 }
+
                 Ok(RenderCommand::Resize(w, h)) => {
-                    use std::num::NonZeroU32;
                     if let (Some(nw), Some(nh)) = (NonZeroU32::new(w), NonZeroU32::new(h)) {
                         surface.resize(&gl_context, nw, nh);
                         renderer.resize(w as i32, h as i32);
                     }
                 }
+
+                Ok(RenderCommand::AddChunk { pos, mesh }) => {
+                    // Trusted winding: mesh_chunk computes real per-quad CCW
+                    // winding — the centroid-based fix_winding in load_mesh
+                    // is wrong for concave voxel geometry.
+                    if let Some(mesh_id) = renderer.load_mesh_trusted_winding(mesh) {
+                        let obj =
+                            renderer.add_object(mesh_id, terrain_material, ObjectKind::Static);
+                        renderer.set_position(obj, pos.world_origin());
+                        chunk_objects.insert(pos, (mesh_id, obj));
+                    }
+                }
+
+                Ok(RenderCommand::RemoveChunk { pos }) => {
+                    if let Some((mesh_id, obj)) = chunk_objects.remove(&pos) {
+                        renderer.remove_object(obj);
+                        renderer.unload_mesh(mesh_id);
+                    }
+                }
+
                 Ok(RenderCommand::Shutdown) | Err(_) => break,
             }
         }
-        // `renderer` drops here, deleting GL resources on the thread that
-        // owns the context — never on the main thread.
     });
 
     (cmd_tx, assets_rx, handle)
