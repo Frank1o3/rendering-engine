@@ -32,7 +32,7 @@ pub enum RenderCommand {
     Render,
     Resize(u32, u32),
     AddChunk { pos: ChunkPos, mesh: MeshData },
-    RemoveChunk { pos: ChunkPos },
+    RemoveChunks(Vec<ChunkPos>),
     Shutdown,
 }
 
@@ -42,9 +42,9 @@ struct ChunkEntry {
     invisible_frames: u32,
 }
 
-const MAX_CHUNK_GPU_UPLOADS_PER_FRAME: usize = 1;
-const MAX_CHUNK_GPU_EVICTIONS_PER_FRAME: usize = 2;
-const INVISIBLE_GRACE_FRAMES: u32 = 90;
+const MAX_CHUNK_GPU_UPLOADS_PER_FRAME: usize = 5;
+const MAX_CHUNK_GPU_EVICTIONS_PER_FRAME: usize = 3;
+const INVISIBLE_GRACE_FRAMES: u32 = 5;
 
 pub fn start_render_thread(
     not_current: NotCurrentContext,
@@ -151,47 +151,51 @@ pub fn start_render_thread(
         let mut current_wireframe = false;
 
         let mut chunk_entries: HashMap<ChunkPos, ChunkEntry> = HashMap::new();
+        let mut scan_counter: u32 = 0;
 
         loop {
             match cmd_rx.recv() {
                 Ok(RenderCommand::Render) => {
                     renderer.render();
 
-                    if let Some(frustum) = renderer.current_frustum() {
-                        let mut upload_budget = MAX_CHUNK_GPU_UPLOADS_PER_FRAME;
-                        let mut evict_budget = MAX_CHUNK_GPU_EVICTIONS_PER_FRAME;
+                    scan_counter = scan_counter.wrapping_add(1);
+                    if scan_counter % 4 == 0 {
+                        if let Some(frustum) = renderer.current_frustum() {
+                            let mut upload_budget = MAX_CHUNK_GPU_UPLOADS_PER_FRAME;
+                            let mut evict_budget = MAX_CHUNK_GPU_EVICTIONS_PER_FRAME;
 
-                        for (pos, entry) in chunk_entries.iter_mut() {
-                            let visible = pos.is_visible(&frustum);
+                            for (pos, entry) in chunk_entries.iter_mut() {
+                                let visible = pos.is_visible(&frustum);
 
-                            if entry.gpu.is_none() {
-                                if visible && upload_budget > 0 {
-                                    if let Some(mesh_id) =
-                                        renderer.load_mesh_trusted_winding(entry.mesh.clone())
+                                if entry.gpu.is_none() {
+                                    if visible && upload_budget > 0 {
+                                        if let Some(mesh_id) =
+                                            renderer.load_mesh_trusted_winding(entry.mesh.clone())
+                                        {
+                                            let obj = renderer.add_object(
+                                                mesh_id,
+                                                terrain_material,
+                                                ObjectKind::Static,
+                                            );
+                                            renderer.set_position(obj, pos.world_origin());
+                                            entry.gpu = Some((mesh_id, obj));
+                                            entry.invisible_frames = 0;
+                                            upload_budget -= 1;
+                                        }
+                                    }
+                                } else if visible {
+                                    entry.invisible_frames = 0;
+                                } else {
+                                    entry.invisible_frames += 1;
+                                    if entry.invisible_frames > INVISIBLE_GRACE_FRAMES
+                                        && evict_budget > 0
                                     {
-                                        let obj = renderer.add_object(
-                                            mesh_id,
-                                            terrain_material,
-                                            ObjectKind::Static,
-                                        );
-                                        renderer.set_position(obj, pos.world_origin());
-                                        entry.gpu = Some((mesh_id, obj));
-                                        entry.invisible_frames = 0;
-                                        upload_budget -= 1;
+                                        if let Some((mesh_id, obj)) = entry.gpu.take() {
+                                            renderer.remove_object(obj);
+                                            renderer.unload_mesh(mesh_id);
+                                        }
+                                        evict_budget -= 1;
                                     }
-                                }
-                            } else if visible {
-                                entry.invisible_frames = 0;
-                            } else {
-                                entry.invisible_frames += 1;
-                                if entry.invisible_frames > INVISIBLE_GRACE_FRAMES
-                                    && evict_budget > 0
-                                {
-                                    if let Some((mesh_id, obj)) = entry.gpu.take() {
-                                        renderer.remove_object(obj);
-                                        renderer.unload_mesh(mesh_id);
-                                    }
-                                    evict_budget -= 1;
                                 }
                             }
                         }
@@ -241,11 +245,13 @@ pub fn start_render_thread(
                     );
                 }
 
-                Ok(RenderCommand::RemoveChunk { pos }) => {
-                    if let Some(entry) = chunk_entries.remove(&pos) {
-                        if let Some((mesh_id, obj)) = entry.gpu {
-                            renderer.remove_object(obj);
-                            renderer.unload_mesh(mesh_id);
+                Ok(RenderCommand::RemoveChunks(positions)) => {
+                    for pos in positions {
+                        if let Some(entry) = chunk_entries.remove(&pos) {
+                            if let Some((mesh_id, obj)) = entry.gpu {
+                                renderer.remove_object(obj);
+                                renderer.unload_mesh(mesh_id);
+                            }
                         }
                     }
                 }

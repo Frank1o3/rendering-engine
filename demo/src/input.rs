@@ -119,7 +119,7 @@ pub fn device_event(state: &mut DemoState, event: &DeviceEvent) {
         if state.cursor_grabbed {
             state.camera_yaw -= delta.0 as f32 * state.config.mouse_sensitivity;
             state.camera_pitch -= delta.1 as f32 * state.config.mouse_sensitivity;
-            state.camera_pitch = state.camera_pitch.clamp(-1.5, 1.5);
+            state.camera_pitch = state.camera_pitch.clamp(-1.6, 1.6);
         }
     }
 }

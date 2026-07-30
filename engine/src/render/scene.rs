@@ -1,19 +1,16 @@
+// engine/src/render/scene.rs
 use crate::render::frame_data::InstanceData;
 use crate::render::renderer::MeshId;
 use crate::resources::material::MaterialId;
 use glam::{Quat, Vec3};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-/// Opaque handle to a registered scene object.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ObjectHandle(pub u32);
 
-/// Determines how aggressively the renderer updates an object's instance data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ObjectKind {
-    /// Uploaded once. Only re-uploaded when explicitly marked dirty.
     Static,
-    /// Always re-uploaded every frame.
     Dynamic,
 }
 
@@ -27,7 +24,6 @@ struct SceneObject {
     scale: f32,
 
     dirty: bool,
-
     cached: InstanceData,
 }
 
@@ -38,7 +34,6 @@ impl SceneObject {
     }
 }
 
-/// Entry in the sorted collection buffer used during rendering.
 #[derive(Clone, Copy)]
 pub struct SortedInstance {
     pub material_id: MaterialId,
@@ -46,11 +41,24 @@ pub struct SortedInstance {
     pub instance: InstanceData,
 }
 
-/// Manages all registered scene objects and their transforms.
 pub struct Scene {
     objects: HashMap<ObjectHandle, SceneObject>,
     next_handle: u32,
-    scene_dirty: bool,
+
+    /// True when the *set* of objects changed (added/removed) — the only
+    /// thing that invalidates `cached_order`. Moving an object does NOT
+    /// set this.
+    order_dirty: bool,
+
+    /// Handles that must be re-encoded into `SortedInstance` this frame
+    /// (all Dynamic objects, plus any Static object explicitly moved via
+    /// set_transform/set_position). Cleared every `flush_dirty` call.
+    dynamic_handles: HashSet<ObjectHandle>,
+    moved_static: HashSet<ObjectHandle>,
+
+    /// Sort order valid whenever `!order_dirty`. Rebuilding this is the
+    /// O(n log n) operation we want to avoid doing every frame.
+    cached_order: Vec<ObjectHandle>,
 }
 
 impl Scene {
@@ -58,7 +66,10 @@ impl Scene {
         Self {
             objects: HashMap::with_capacity(1024),
             next_handle: 0,
-            scene_dirty: false,
+            order_dirty: false,
+            dynamic_handles: HashSet::new(),
+            moved_static: HashSet::new(),
+            cached_order: Vec::new(),
         }
     }
 
@@ -83,14 +94,29 @@ impl Scene {
         };
         obj.recompute_cache();
 
+        if kind == ObjectKind::Dynamic {
+            self.dynamic_handles.insert(handle);
+        }
+
         self.objects.insert(handle, obj);
-        self.scene_dirty = true;
+        self.order_dirty = true;
         handle
     }
 
     pub fn remove_object(&mut self, handle: ObjectHandle) {
         if self.objects.remove(&handle).is_some() {
-            self.scene_dirty = true;
+            self.dynamic_handles.remove(&handle);
+            self.moved_static.remove(&handle);
+            self.order_dirty = true;
+        }
+    }
+
+    fn mark_moved(&mut self, handle: ObjectHandle) {
+        if let Some(obj) = self.objects.get_mut(&handle) {
+            obj.dirty = true;
+            if obj.kind != ObjectKind::Dynamic {
+                self.moved_static.insert(handle);
+            }
         }
     }
 
@@ -105,54 +131,76 @@ impl Scene {
             obj.position = position;
             obj.rotation = rotation;
             obj.scale = scale;
-            obj.dirty = true;
         }
+        self.mark_moved(handle);
     }
 
     pub fn set_position(&mut self, handle: ObjectHandle, position: Vec3) {
         if let Some(obj) = self.objects.get_mut(&handle) {
             obj.position = position;
-            obj.dirty = true;
         }
+        self.mark_moved(handle);
     }
 
-    pub fn set_position_rotation(
-        &mut self,
-        handle: ObjectHandle,
-        position: Vec3,
-        rotation: Quat,
-    ) {
+    pub fn set_position_rotation(&mut self, handle: ObjectHandle, position: Vec3, rotation: Quat) {
         if let Some(obj) = self.objects.get_mut(&handle) {
             obj.position = position;
             obj.rotation = rotation;
-            obj.dirty = true;
         }
+        self.mark_moved(handle);
     }
 
+    /// Recomputes cached InstanceData only for objects that can actually
+    /// have changed this frame: all Dynamic objects (always, since they
+    /// might move any frame) plus any Static object explicitly moved.
+    /// This replaces the old full-HashMap scan.
     pub fn flush_dirty(&mut self) -> usize {
         let mut recomputed = 0;
-        for obj in self.objects.values_mut() {
-            let needs_update = obj.dirty || obj.kind == ObjectKind::Dynamic;
-            if needs_update {
+
+        for &handle in &self.dynamic_handles {
+            if let Some(obj) = self.objects.get_mut(&handle) {
                 obj.recompute_cache();
                 recomputed += 1;
             }
         }
-        self.scene_dirty = false;
+        for handle in self.moved_static.drain() {
+            if let Some(obj) = self.objects.get_mut(&handle) {
+                obj.recompute_cache();
+                recomputed += 1;
+            }
+        }
+
         recomputed
     }
 
-    pub fn collect_sorted_into(&self, out: &mut Vec<SortedInstance>) {
-        out.clear();
-        out.reserve(self.objects.len());
-        for obj in self.objects.values() {
-            out.push(SortedInstance {
-                material_id: obj.material_id,
-                mesh_id: obj.mesh_id,
-                instance: obj.cached,
+    /// Rebuilds `cached_order` only when membership changed; otherwise
+    /// reuses the existing order and just re-reads each object's current
+    /// (already-recomputed-by-flush_dirty) cached instance data. This is
+    /// the fix: an O(n log n) sort every frame becomes an O(n) copy on the
+    /// common frame, and a real rebuild only on chunk load/unload.
+    pub fn collect_sorted_into(&mut self, out: &mut Vec<SortedInstance>) {
+        if self.order_dirty {
+            self.cached_order.clear();
+            self.cached_order.extend(self.objects.keys().copied());
+            let objects = &self.objects;
+            self.cached_order.sort_unstable_by_key(|h| {
+                let obj = &objects[h];
+                (obj.material_id, obj.mesh_id)
             });
+            self.order_dirty = false;
         }
-        out.sort_unstable_by_key(|o| (o.material_id, o.mesh_id));
+
+        out.clear();
+        out.reserve(self.cached_order.len());
+        for &handle in &self.cached_order {
+            if let Some(obj) = self.objects.get(&handle) {
+                out.push(SortedInstance {
+                    material_id: obj.material_id,
+                    mesh_id: obj.mesh_id,
+                    instance: obj.cached,
+                });
+            }
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -164,7 +212,7 @@ impl Scene {
     }
 
     pub fn is_scene_dirty(&self) -> bool {
-        self.scene_dirty
+        self.order_dirty
     }
 }
 

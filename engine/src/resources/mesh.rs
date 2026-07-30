@@ -12,7 +12,7 @@ pub struct Vertex {
     pub position: [f32; 3], // 12 bytes  offset  0
     pub normal: [i8; 4],    //  4 bytes  offset 12  (xyz packed, w=0 padding)
     pub color: [u8; 4],     //  4 bytes  offset 16
-    pub uv: [f32; 2],        //  8 bytes  offset 20
+    pub uv: [u16; 2],       //  8 bytes  offset 20
 } // 28 bytes total
 
 impl Vertex {
@@ -22,12 +22,12 @@ impl Vertex {
             position,
             normal: pack_normal(normal),
             color,
-            uv: [0.0, 0.0],
+            uv: [0, 0],
         }
     }
 
     /// Full constructor including UV coordinates.
-    pub fn new_with_uv(position: [f32; 3], normal: [f32; 3], color: [u8; 4], uv: [f32; 2]) -> Self {
+    pub fn new_with_uv(position: [f32; 3], normal: [f32; 3], color: [u8; 4], uv: [u16; 2]) -> Self {
         Self {
             position,
             normal: pack_normal(normal),
