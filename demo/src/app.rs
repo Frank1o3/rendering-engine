@@ -97,15 +97,15 @@ impl ApplicationHandler for App {
         let dt = (now - state.last_frame).as_secs_f32();
         state.last_frame = now;
 
-        //
-        // FPS COUNTER (smoothed)
-        //
-        state.frame_count += 1;
+        // app.rs — replace the tick-based counter with the atomic-based one
+        let rendered = state
+            .frame_counter
+            .load(std::sync::atomic::Ordering::Relaxed);
         let elapsed = now.duration_since(state.last_fps_update).as_secs_f32();
-
         if elapsed >= 0.5 {
-            state.current_fps = state.frame_count as f32 / elapsed;
-            state.frame_count = 0;
+            let delta = rendered.wrapping_sub(state.last_frame_counter);
+            state.current_fps = delta as f32 / elapsed;
+            state.last_frame_counter = rendered;
             state.last_fps_update = now;
         }
 

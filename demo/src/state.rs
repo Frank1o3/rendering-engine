@@ -1,8 +1,5 @@
 use std::{
-    collections::HashMap,
-    sync::{Arc, atomic::AtomicBool, mpsc::SyncSender},
-    thread::JoinHandle,
-    time::Instant,
+    collections::HashMap, sync::{Arc, atomic::{AtomicBool, AtomicU64}, mpsc::SyncSender}, thread::JoinHandle, time::Instant,
 };
 
 use glam::Vec3;
@@ -62,10 +59,11 @@ pub struct DemoState {
 
     pub last_frame: Instant,
     pub current_fps: f32,
-    pub frame_count: u32,
     pub last_fps_update: Instant,
     pub vsync_enabled: Arc<AtomicBool>,
     pub config: crate::config::Config,
+    pub frame_counter: Arc<AtomicU64>,
+    pub last_frame_counter: u64,
 }
 
 impl DemoState {

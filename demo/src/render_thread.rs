@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::num::NonZeroU32;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
 
@@ -40,12 +40,19 @@ pub enum RenderCommand {
     RemoveChunk { pos: ChunkPos },
     Shutdown,
 }
+enum PendingChunkOp {
+    Add { pos: ChunkPos, mesh: MeshData },
+    Remove { pos: ChunkPos },
+}
+
+const MAX_CHUNK_UPLOADS_PER_FRAME: usize = 1; // tune this — see note below
 
 pub fn start_render_thread(
     not_current: NotCurrentContext,
     surface: Surface<WindowSurface>,
     read_handle: ReadHandle<FrameData>,
     vsync_enabled: Arc<AtomicBool>,
+    frame_counter: Arc<AtomicU64>,
 ) -> (
     SyncSender<RenderCommand>,
     Receiver<Assets>,
@@ -130,9 +137,37 @@ pub fn start_render_thread(
         // no concept of "chunk," only meshes and scene objects.
         let mut chunk_objects: HashMap<ChunkPos, (MeshId, ObjectHandle)> = HashMap::new();
 
+        let mut pending: std::collections::VecDeque<PendingChunkOp> =
+            std::collections::VecDeque::new();
+
         loop {
             match cmd_rx.recv() {
                 Ok(RenderCommand::Render) => {
+                    let mut budget = MAX_CHUNK_UPLOADS_PER_FRAME;
+                    while budget > 0 {
+                        let Some(op) = pending.pop_front() else { break };
+                        match op {
+                            PendingChunkOp::Add { pos, mesh } => {
+                                if let Some(mesh_id) = renderer.load_mesh_trusted_winding(mesh) {
+                                    let obj = renderer.add_object(
+                                        mesh_id,
+                                        terrain_material,
+                                        ObjectKind::Static,
+                                    );
+                                    renderer.set_position(obj, pos.world_origin());
+                                    chunk_objects.insert(pos, (mesh_id, obj));
+                                }
+                            }
+                            PendingChunkOp::Remove { pos } => {
+                                if let Some((mesh_id, obj)) = chunk_objects.remove(&pos) {
+                                    renderer.remove_object(obj);
+                                    renderer.unload_mesh(mesh_id);
+                                }
+                            }
+                        }
+                        budget -= 1;
+                    }
+
                     renderer.render();
 
                     let new_vsync = vsync_enabled.load(Ordering::Relaxed);
@@ -146,8 +181,8 @@ pub fn start_render_thread(
                             current_vsync = new_vsync;
                         }
                     }
-
                     let _ = surface.swap_buffers(&gl_context);
+                    frame_counter.fetch_add(1, Ordering::Relaxed); // moved here — counts real presents only
                 }
 
                 Ok(RenderCommand::Resize(w, h)) => {
@@ -158,22 +193,11 @@ pub fn start_render_thread(
                 }
 
                 Ok(RenderCommand::AddChunk { pos, mesh }) => {
-                    // Trusted winding: mesh_chunk computes real per-quad CCW
-                    // winding — the centroid-based fix_winding in load_mesh
-                    // is wrong for concave voxel geometry.
-                    if let Some(mesh_id) = renderer.load_mesh_trusted_winding(mesh) {
-                        let obj =
-                            renderer.add_object(mesh_id, terrain_material, ObjectKind::Static);
-                        renderer.set_position(obj, pos.world_origin());
-                        chunk_objects.insert(pos, (mesh_id, obj));
-                    }
+                    pending.push_back(PendingChunkOp::Add { pos, mesh });
                 }
 
                 Ok(RenderCommand::RemoveChunk { pos }) => {
-                    if let Some((mesh_id, obj)) = chunk_objects.remove(&pos) {
-                        renderer.remove_object(obj);
-                        renderer.unload_mesh(mesh_id);
-                    }
+                    pending.push_back(PendingChunkOp::Remove { pos });
                 }
 
                 Ok(RenderCommand::Shutdown) | Err(_) => break,

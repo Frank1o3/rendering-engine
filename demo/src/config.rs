@@ -22,25 +22,21 @@ pub struct Config {
     pub window_width: u32,
     pub window_height: u32,
     pub vsync_default: bool,
-    pub sun_azimuth_deg: f32,
-    pub sun_elevation_deg: f32,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            render_distance: 8,
+            render_distance: 12,
             fly_speed: 12.0,
             mouse_sensitivity: 0.002,
             touch_look_sensitivity: 0.004,
-            fov_degrees: 60.0,
+            fov_degrees: 95.0,
             near_plane: 0.1,
-            far_plane: 500.0,
+            far_plane: 700.0,
             window_width: 1280,
             window_height: 720,
             vsync_default: false,
-            sun_azimuth_deg: 45.0,
-            sun_elevation_deg: 35.0,
         }
     }
 }
@@ -79,19 +75,6 @@ impl Config {
             }
             Err(e) => log::warn!("Failed to serialize config: {e}"),
         }
-    }
-
-    /// Sun direction as a normalized world-space vector, derived from the
-    /// azimuth/elevation config values.
-    pub fn sun_direction(&self) -> glam::Vec3 {
-        let az = self.sun_azimuth_deg.to_radians();
-        let el = self.sun_elevation_deg.to_radians();
-        glam::Vec3::new(
-            el.cos() * az.cos(),
-            el.sin(),
-            el.cos() * az.sin(),
-        )
-        .normalize()
     }
 
     fn path() -> PathBuf {

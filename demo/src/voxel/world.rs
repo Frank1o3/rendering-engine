@@ -1,5 +1,5 @@
 // demo/src/voxel/world.rs
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -30,6 +30,7 @@ pub struct World {
     render_tx: SyncSender<RenderCommand>,
     // Limit how many new chunks we start per frame to avoid CPU spikes.
     max_load_per_frame: usize,
+    load_queue: VecDeque<ChunkPos>,
 }
 
 impl World {
@@ -41,7 +42,8 @@ impl World {
         let worker_count = thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4)
-            .clamp(2, 8);
+            .saturating_sub(3)
+            .clamp(1, 6);
 
         for _ in 0..worker_count {
             let task_rx = task_rx.clone();
@@ -81,62 +83,51 @@ impl World {
             task_tx,
             ready_rx,
             render_tx,
-            max_load_per_frame: 4, // tune this value
+            max_load_per_frame: 4,       // tune this value
+            load_queue: VecDeque::new(), // NEW
         }
     }
 
-    /// Update the set of loaded chunks.
-    /// - Keeps all chunks within `render_distance`.
-    /// - Removes only those outside the distance.
-    /// - Prioritises loading chunks inside the view frustum, but limits new tasks per frame.
     pub fn update(&mut self, player_pos: Vec3, frustum_planes: &[glam::Vec4; 6]) {
         let px = (player_pos.x / CHUNK_SIZE_X as f32).floor() as i32;
         let pz = (player_pos.z / CHUNK_SIZE_Z as f32).floor() as i32;
         let player_chunk = ChunkPos { x: px, z: pz };
 
-        // Collect finished meshes.
+        // Always drain finished meshes.
         while let Ok(MeshReady { pos }) = self.ready_rx.try_recv() {
             self.chunks.insert(pos, ChunkState::Loaded);
         }
 
-        // Only recompute when the player moves to a new chunk.
-        if player_chunk == self.player_chunk {
-            return;
-        }
-        self.player_chunk = player_chunk;
+        // Only rebuild the "what's needed" picture on a chunk crossing.
+        if player_chunk != self.player_chunk {
+            self.player_chunk = player_chunk;
+            self.rebuild_queue(player_chunk, frustum_planes);
 
-        let rd = self.render_distance;
-        let mut needed = HashSet::with_capacity(((2 * rd + 1) * (2 * rd + 1)) as usize);
-        // Visible set is a subset of needed; we use it for prioritisation.
-        let mut visible = HashSet::new();
-
-        for dx in -rd..=rd {
-            for dz in -rd..=rd {
-                let pos = ChunkPos {
-                    x: px + dx,
-                    z: pz + dz,
-                };
-                needed.insert(pos);
-                if Self::is_chunk_visible(pos, frustum_planes) {
-                    visible.insert(pos);
+            let rd = self.render_distance;
+            let mut needed = HashSet::with_capacity(((2 * rd + 1) * (2 * rd + 1)) as usize);
+            for dx in -rd..=rd {
+                for dz in -rd..=rd {
+                    needed.insert(ChunkPos {
+                        x: px + dx,
+                        z: pz + dz,
+                    });
                 }
+            }
+            let to_remove: Vec<ChunkPos> = self
+                .chunks
+                .iter()
+                .filter(|(pos, state)| **state == ChunkState::Loaded && !needed.contains(pos))
+                .map(|(pos, _)| *pos)
+                .collect();
+            for pos in to_remove {
+                let _ = self.render_tx.send(RenderCommand::RemoveChunk { pos });
+                self.chunks.remove(&pos);
             }
         }
 
-        // Remove chunks that are now out of render distance.
-        let to_remove: Vec<ChunkPos> = self
-            .chunks
-            .iter()
-            .filter(|(pos, state)| **state == ChunkState::Loaded && !needed.contains(pos))
-            .map(|(pos, _)| *pos)
-            .collect();
-
-        for pos in to_remove {
-            let _ = self.render_tx.send(RenderCommand::RemoveChunk { pos });
-            self.chunks.remove(&pos);
-        }
-
-        // Count how many chunks are currently loading (to respect the per-frame limit).
+        // Dispatch from the queue EVERY call — this is the actual fix.
+        // Standing still (or turning without crossing a chunk edge) now
+        // keeps draining the backlog instead of freezing it.
         let loading_count = self
             .chunks
             .values()
@@ -144,40 +135,48 @@ impl World {
             .count();
         let mut can_start = self.max_load_per_frame.saturating_sub(loading_count);
 
-        if can_start == 0 {
-            return;
-        }
-
-        // First, try to start visible chunks that are not yet loaded.
-        for &pos in &visible {
-            if can_start == 0 {
+        while can_start > 0 {
+            let Some(pos) = self.load_queue.pop_front() else {
                 break;
-            }
+            };
             if self.chunks.contains_key(&pos) {
-                continue;
+                continue; // may have loaded/started via another path since queued
             }
             self.chunks.insert(pos, ChunkState::Loading);
             let _ = self.task_tx.send(pos);
             can_start -= 1;
         }
+    }
 
-        // If we still have capacity, start any other needed chunks (outside frustum).
-        if can_start > 0 {
-            for &pos in &needed {
-                if can_start == 0 {
-                    break;
-                }
-                if visible.contains(&pos) {
-                    continue;
-                } // already handled
+    fn rebuild_queue(&mut self, center: ChunkPos, frustum_planes: &[glam::Vec4; 6]) {
+        let rd = self.render_distance;
+        let mut visible = Vec::new();
+        let mut rest = Vec::new();
+
+        for dx in -rd..=rd {
+            for dz in -rd..=rd {
+                let pos = ChunkPos {
+                    x: center.x + dx,
+                    z: center.z + dz,
+                };
                 if self.chunks.contains_key(&pos) {
-                    continue;
+                    continue; // already loaded or in flight
                 }
-                self.chunks.insert(pos, ChunkState::Loading);
-                let _ = self.task_tx.send(pos);
-                can_start -= 1;
+                if Self::is_chunk_visible(pos, frustum_planes) {
+                    visible.push(pos);
+                } else {
+                    rest.push(pos);
+                }
             }
         }
+
+        let dist2 = |p: &ChunkPos| (p.x - center.x).pow(2) + (p.z - center.z).pow(2);
+        visible.sort_by_key(dist2);
+        rest.sort_by_key(dist2);
+
+        self.load_queue.clear();
+        self.load_queue.extend(visible);
+        self.load_queue.extend(rest);
     }
 
     /// AABB‑frustum test for a chunk (16×256×16 box).

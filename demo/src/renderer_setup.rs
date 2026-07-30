@@ -29,6 +29,7 @@ pub fn create_demo_state(event_loop: &ActiveEventLoop) -> DemoState {
     let config = crate::config::Config::load_or_default();
     let vsync_enabled = Arc::new(AtomicBool::new(config.vsync_default));
     let template = ConfigTemplateBuilder::new();
+    let frame_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
     let window_attributes = Window::default_attributes()
         .with_title("Rendering Engine — OpenGL ES 3.2 3D Demo")
@@ -71,8 +72,13 @@ pub fn create_demo_state(event_loop: &ActiveEventLoop) -> DemoState {
 
     let (write_handle, read_handle) = new_triple_buffer::<FrameData>();
 
-    let (render_tx, assets_rx, render_thread_handle) =
-        start_render_thread(not_current, gl_surface, read_handle, vsync_enabled.clone());
+    let (render_tx, assets_rx, render_thread_handle) = start_render_thread(
+        not_current,
+        gl_surface,
+        read_handle,
+        vsync_enabled.clone(),
+        frame_counter.clone(),
+    );
 
     // Block once, briefly, until the render thread has compiled shaders and
     // uploaded the starting meshes — the game thread needs those IDs before
@@ -100,9 +106,10 @@ pub fn create_demo_state(event_loop: &ActiveEventLoop) -> DemoState {
         world,
         last_frame: Instant::now(),
         current_fps: 0.0,
-        frame_count: 0,
         last_fps_update: Instant::now(),
         vsync_enabled,
         config,
+        frame_counter,
+        last_frame_counter: 0,
     }
 }
