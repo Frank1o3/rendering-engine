@@ -92,6 +92,31 @@ pub fn start_render_thread(
         let lit_shader = *shader_map.get("lit").expect("Missing lit shader");
         let ui_shader = *shader_map.get("ui").expect("Missing ui shader");
 
+        // ─── Skybox setup ──────────────────────────────────────────────
+        let skybox_shader_id = *shader_map.get("skybox").expect("Missing skybox shader");
+
+        // Create the skybox pipeline
+        use rendering_engine::render::skybox::SkyboxPipeline;
+        renderer.skybox = Some(SkyboxPipeline::new(renderer.context(), skybox_shader_id));
+        renderer.enable_skybox(true);
+        renderer.set_skybox_color(glam::Vec3::new(0.5, 0.7, 1.0));
+
+        // Sun parameters
+        let sun_dir = glam::Vec3::new(0.6, 0.8, 0.4).normalize();
+        let sun_color = glam::Vec3::new(1.0, 0.9, 0.6);
+        let sun_size = 0.1;
+
+        // Upload skybox uniforms
+        renderer.upload_shader_vec3(skybox_shader_id, "uSunDir", sun_dir);
+        renderer.upload_shader_vec3(skybox_shader_id, "uSunColor", sun_color);
+        renderer.upload_shader_f32(skybox_shader_id, "uSunSize", sun_size);
+
+        // Upload lit shader uniforms
+        renderer.upload_shader_vec3(lit_shader, "uSunDir", sun_dir);
+        renderer.upload_shader_f32(lit_shader, "uAmbient", 0.38);
+        renderer.upload_shader_f32(lit_shader, "uWireframe", 0.0);
+
+        // ─── Materials ────────────────────────────────────────────────────
         let terrain_material =
             renderer.create_material(lit_shader, PipelineState::default_opaque(lit_shader.0));
 
@@ -106,14 +131,6 @@ pub fn start_render_thread(
             dst_factor: BlendFactor::OneMinusSrcAlpha,
         };
         let ui_material = renderer.create_material(ui_shader, ui_pipeline);
-
-        renderer.upload_shader_vec3(
-            lit_shader,
-            "uSunDir",
-            glam::Vec3::new(0.6, 0.8, 0.4).normalize(),
-        );
-        renderer.upload_shader_f32(lit_shader, "uAmbient", 0.28);
-        renderer.upload_shader_f32(lit_shader, "uWireframe", 0.0);
 
         let assets = Assets {
             quad_mesh: quad_mesh.expect("quad mesh should be loaded"),
