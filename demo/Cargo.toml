@@ -19,10 +19,9 @@
             keystore_password="ENV_KEYSTORE_PASSWORD"
             path="../keys/upload-keystore.jks"
     [package.metadata.apple]
-        app_id="com.frank1o3.renderingengine-demo"
+        app_id="com.frank1o3.renderingengine.demo"
         bundle_version="0.1.2"
         bundle_version_short="0.1.2"
-        development_team=""                        # Leave empty for unsigned CI runs
 
 [lib]
     crate-type=["cdylib", "rlib"]

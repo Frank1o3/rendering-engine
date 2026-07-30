@@ -17,8 +17,6 @@ jobs:
                       target: windows
                     - os: macos-latest
                       target: macos-desktop
-                    - os: macos-latest
-                      target: ios
 
         runs-on: ${{ matrix.os }}
 
@@ -126,50 +124,6 @@ jobs:
                   name: macos-desktop
                   path: RenderingEngineDemo-macOS.zip
 
-            ####################################################################
-            # iOS
-            ####################################################################
-
-            - name: Add iOS Targets
-              if: matrix.target == 'ios'
-              run: |
-                  rustup target add aarch64-apple-ios
-                  rustup target add aarch64-apple-ios-sim
-
-            - name: Install cargo-mobile2
-              if: matrix.target == 'ios'
-              run: cargo install cargo-mobile2
-
-            - name: Build iOS
-              if: matrix.target == 'ios'
-              run: |
-                  cd demo
-                  cargo apple build --release
-
-            - name: Package iOS Build
-              if: matrix.target == 'ios'
-              shell: bash
-              run: |
-                  mkdir ios-package
-                  APP=$(find target -type d -name "*.app" | head -n1)
-
-                  if [ -z "$APP" ]; then
-                      echo "No .app bundle produced."
-                      exit 1
-                  fi
-
-                  cp -R "$APP" ios-package/
-
-                  cd ios-package
-                  zip -r ../RenderingEngineDemo-iOS.zip .
-
-            - name: Upload iOS Artifact
-              if: matrix.target == 'ios'
-              uses: actions/upload-artifact@v7
-              with:
-                  name: ios-app
-                  path: RenderingEngineDemo-iOS.zip
-
     release:
         needs: build
         runs-on: ubuntu-latest
@@ -189,4 +143,3 @@ jobs:
                       artifacts/android-apk/*.apk
                       artifacts/windows-desktop/desktop.exe
                       artifacts/macos-desktop/RenderingEngineDemo-macOS.zip
-                      artifacts/ios-app/RenderingEngineDemo-iOS.zip
