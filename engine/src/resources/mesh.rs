@@ -1,28 +1,38 @@
-use crate::free_list::Allocation;
+use crate::core::free_list::Allocation;
 use bytemuck::{Pod, Zeroable};
 
-/// 20-byte vertex: position (12) + normal (4, packed i8) + color (4).
+/// 28-byte vertex: position (12) + normal (4, packed i8) + color (4) + uv (8).
 ///
 /// Normal packing: three signed bytes in [-127, 127] map to [-1.0, 1.0] when
 /// the attribute is declared `GL_BYTE, normalized=true`. The fourth byte is
-/// always 0 (padding for alignment). This halves the per-vertex normal cost
-/// vs. three f32s while keeping GPU-side decode free (the fixed-function
-/// normalisation unit handles it).
+/// always 0 (padding for alignment).
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct Vertex {
     pub position: [f32; 3], // 12 bytes  offset  0
     pub normal: [i8; 4],    //  4 bytes  offset 12  (xyz packed, w=0 padding)
     pub color: [u8; 4],     //  4 bytes  offset 16
-} // 20 bytes total
+    pub uv: [f32; 2],        //  8 bytes  offset 20
+} // 28 bytes total
 
 impl Vertex {
-    /// Convenience constructor.
+    /// Convenience constructor with default zero UVs.
     pub fn new(position: [f32; 3], normal: [f32; 3], color: [u8; 4]) -> Self {
         Self {
             position,
             normal: pack_normal(normal),
             color,
+            uv: [0.0, 0.0],
+        }
+    }
+
+    /// Full constructor including UV coordinates.
+    pub fn new_with_uv(position: [f32; 3], normal: [f32; 3], color: [u8; 4], uv: [f32; 2]) -> Self {
+        Self {
+            position,
+            normal: pack_normal(normal),
+            color,
+            uv,
         }
     }
 }
@@ -43,12 +53,7 @@ pub struct MeshData {
 impl MeshData {
     /// Compute per-vertex normals by averaging the face normals of every
     /// triangle that shares each vertex.
-    ///
-    /// Call this after constructing raw geometry and before `fix_winding`.
-    /// It overwrites whatever normals were already in the vertex buffer.
     pub fn compute_normals(&mut self) {
-        // Accumulate face normals into each vertex as f32 first to avoid
-        // precision loss during the sum, then pack at the end.
         let mut accum: Vec<glam::Vec3> = vec![glam::Vec3::ZERO; self.vertices.len()];
 
         for tri in self.indices.chunks_exact(3) {
@@ -56,8 +61,7 @@ impl MeshData {
             let a = glam::Vec3::from(self.vertices[ia].position);
             let b = glam::Vec3::from(self.vertices[ib].position);
             let c = glam::Vec3::from(self.vertices[ic].position);
-            let face_normal = (b - a).cross(c - a); // not normalised intentionally
-            // (area-weighted average)
+            let face_normal = (b - a).cross(c - a);
             accum[ia] += face_normal;
             accum[ib] += face_normal;
             accum[ic] += face_normal;
@@ -69,12 +73,11 @@ impl MeshData {
         }
     }
 
-    /// Forces every triangle to satisfy the engine's fixed convention:
-    /// CCW winding when viewed from outside the mesh.
-    ///
-    /// Run this at load time for any procedurally generated or imported mesh
-    /// so `CullMode::Back` never silently eats a correctly-facing face.
+    /// Forces every triangle to satisfy CCW winding when viewed from outside.
     pub fn fix_winding(&mut self) {
+        if self.vertices.is_empty() {
+            return;
+        }
         let centroid: glam::Vec3 = self
             .vertices
             .iter()
@@ -102,9 +105,8 @@ impl MeshData {
         }
     }
 
-    /// Conservative bounding sphere radius: distance from the origin of the
-    /// local-space mesh to its furthest vertex.  Stored in `Mesh` and used for
-    /// CPU-side frustum culling.
+    /// Conservative bounding sphere radius: distance from the origin of local space
+    /// to its furthest vertex (+ 5% padding).
     pub fn bounding_radius(&self) -> f32 {
         self.vertices
             .iter()
@@ -113,20 +115,16 @@ impl MeshData {
                 p.length()
             })
             .fold(0.0_f32, f32::max)
-            * 1.05 // 5% padding — eliminates edge popping without over-culling
+            * 1.05
     }
 }
 
-/// A mesh is a lightweight view into the shared `GeometryPool`.
-/// It owns no GL resources directly — created by `Renderer::load_mesh`,
-/// released by `Renderer::unload_mesh`.
+/// A mesh is a view into the shared `GeometryPool`.
 #[derive(Clone, Copy, Debug)]
 pub struct Mesh {
     pub base_vertex: i32,
     pub first_index: u32,
     pub index_count: i32,
-    /// Conservative bounding sphere radius in local space.
-    /// Used for CPU-side frustum culling before submitting to the renderer.
     pub bounding_radius: f32,
     pub(crate) vertex_alloc: Allocation,
     pub(crate) index_alloc: Allocation,

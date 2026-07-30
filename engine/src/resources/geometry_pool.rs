@@ -1,14 +1,11 @@
-use crate::free_list::{Allocation, FreeListAllocator};
-use crate::mesh::{MeshData, Vertex};
+use crate::core::free_list::{Allocation, FreeListAllocator};
+use super::mesh::{MeshData, Vertex};
 use glow::HasContext;
 use std::sync::Arc;
 
 pub const MAX_POOL_VERTICES: usize = 1_000_000;
 pub const MAX_POOL_INDICES: usize = 3_000_000;
 
-/// Where a mesh's data lives within the shared pool, plus the allocation
-/// handles needed to free it later. The alloc fields are crate-private —
-/// external callers only see the geometry offsets they need for draw calls.
 #[derive(Clone, Copy, Debug)]
 pub struct MeshRange {
     pub base_vertex: i32,
@@ -49,15 +46,25 @@ impl GeometryPool {
                 glow::STATIC_DRAW,
             );
 
-            let stride = std::mem::size_of::<Vertex>() as i32;
+            let stride = std::mem::size_of::<Vertex>() as i32; // 28 bytes
 
+            // Attrib 0: Position [f32; 3] (offset 0)
             gl.enable_vertex_attrib_array(0);
             gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, stride, 0);
+
+            // Attrib 1: Normal [i8; 4] normalized (offset 12)
             gl.enable_vertex_attrib_array(1);
             gl.vertex_attrib_pointer_f32(1, 3, glow::BYTE, true, stride, 12);
+
+            // Attrib 2: Color [u8; 4] normalized (offset 16)
             gl.enable_vertex_attrib_array(2);
             gl.vertex_attrib_pointer_f32(2, 4, glow::UNSIGNED_BYTE, true, stride, 16);
 
+            // Attrib 6: UV [f32; 2] (offset 20)
+            gl.enable_vertex_attrib_array(6);
+            gl.vertex_attrib_pointer_f32(6, 2, glow::FLOAT, false, stride, 20);
+
+            // Per-instance transform buffer attributes
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(transform_buffer));
             let inst_stride: i32 = 32;
 
@@ -84,21 +91,11 @@ impl GeometryPool {
         }
     }
 
-    /// Uploads a mesh into a free region of the pool.
-    ///
-    /// Returns `None` if either the vertex or index pool has no single free
-    /// block large enough — this replaces the old behavior of panicking via
-    /// `assert!` on capacity overflow. A chunk-streaming caller needs to be
-    /// able to handle "pool full" as a normal, recoverable condition (e.g.
-    /// defer the upload a frame, or evict the farthest chunk first) rather
-    /// than crashing the render thread.
     pub fn upload(&mut self, data: &MeshData) -> Option<MeshRange> {
         let v_alloc = self.vertex_alloc.alloc(data.vertices.len())?;
         let i_alloc = match self.index_alloc.alloc(data.indices.len()) {
             Some(a) => a,
             None => {
-                // Roll back the vertex allocation so a failed upload doesn't
-                // leak pool space.
                 self.vertex_alloc.free(v_alloc);
                 return None;
             }
@@ -130,11 +127,6 @@ impl GeometryPool {
         })
     }
 
-    /// Returns a mesh's vertex/index regions to the pool for reuse. Does
-    /// NOT zero the underlying GPU memory — stale bytes are harmless since
-    /// nothing will reference this range via any live `MeshRange`/draw
-    /// command once the caller has dropped it (see `Renderer::unload_mesh`,
-    /// which removes the mesh from the lookup table in the same call).
     pub fn free(&mut self, range: MeshRange) {
         self.vertex_alloc.free(range.vertex_alloc);
         self.index_alloc.free(range.index_alloc);

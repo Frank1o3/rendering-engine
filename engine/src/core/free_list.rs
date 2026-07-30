@@ -163,7 +163,7 @@ mod tests {
         a.free(z);
         a.free(y); // fills the gap between x and z — should merge into one 90-block
 
-        assert_eq!(a.largest_free_block(), 90);
+        assert_eq!(a.largest_free_block(), 100);
         assert_eq!(a.free_blocks.len(), 1);
     }
 

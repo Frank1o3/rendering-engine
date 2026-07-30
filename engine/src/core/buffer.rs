@@ -1,4 +1,4 @@
-use crate::frame_data::InstanceData;
+use crate::render::frame_data::InstanceData;
 use glow::HasContext;
 use std::sync::Arc;
 

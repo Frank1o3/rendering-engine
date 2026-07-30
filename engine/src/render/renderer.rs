@@ -1,64 +1,42 @@
-// src/renderer/engine.rs
-use crate::buffer::PersistentMappedBuffer;
-use crate::draw_indirect::{DrawElementsIndirectCommand, IndirectBuffer, MdiStrategy};
-use crate::frame_data::{FrameData, InstanceData};
-use crate::geometry_pool::GeometryPool;
-use crate::math::{self, sphere_inside_frustum};
-use crate::mesh::{Mesh, MeshData};
-use crate::pipeline::{PipelineCache, PipelineState, PipelineStateId};
-use crate::scene::{ObjectHandle, ObjectKind, Scene, SortedInstance};
-use crate::shader::ShaderProgram;
-use crate::triple_buffer::ReadHandle;
+use crate::core::buffer::PersistentMappedBuffer;
+use crate::core::math::{self, sphere_inside_frustum};
+use crate::core::triple_buffer::ReadHandle;
+use crate::render::draw_indirect::{DrawElementsIndirectCommand, IndirectBuffer, MdiStrategy};
+use crate::render::frame_data::{FrameData, InstanceData};
+use crate::render::pipeline::{PipelineCache, PipelineState, PipelineStateId};
+use crate::render::scene::{ObjectHandle, ObjectKind, Scene, SortedInstance};
+use crate::render::skybox::SkyboxPipeline;
+use crate::resources::geometry_pool::GeometryPool;
+use crate::resources::material::{MaterialId, MaterialManager};
+use crate::resources::mesh::{Mesh, MeshData};
+use crate::resources::shader::{ShaderId, ShaderManager};
+use crate::resources::texture::{TextureId, TextureManager};
+
 use bytemuck::{Pod, Zeroable};
 use glam::Vec4;
 use glow::HasContext;
 use std::collections::HashMap;
-use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
 const MAX_OBJECTS: usize = 65536;
-
-/// Number of independently-fenced regions in the persistent-mapped transform
-/// buffer. Each frame writes into one region while up to `TRANSFORM_REGIONS - 1`
-/// prior frames' regions may still be in flight on the GPU. Without this, the
-/// CPU can start overwriting slot data that a still-executing indirect draw
-/// call from a previous frame is reading, producing a torn transform for one
-/// frame — visible as an object briefly rendering in the wrong place / getting
-/// culled, especially when camera movement changes which objects occupy which
-/// slots frame-to-frame.
 const TRANSFORM_REGIONS: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Pod, Zeroable)]
 #[repr(transparent)]
 pub struct MeshId(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Pod, Zeroable)]
-#[repr(transparent)]
-pub struct ShaderId(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Pod, Zeroable)]
-#[repr(transparent)]
-pub struct MaterialId(pub u32);
-
-/// Material entry storing both shader and pipeline state.
-#[derive(Debug, Clone, Copy)]
-pub struct MaterialEntry {
-    pub shader_id: ShaderId,
-    pub pipeline_id: PipelineStateId,
-}
-
 pub struct Renderer {
     gl: Arc<glow::Context>,
     read_handle: ReadHandle<FrameData>,
-    shaders: HashMap<ShaderId, ShaderProgram>,
+    pub shaders: ShaderManager,
+    pub materials: MaterialManager,
+    pub textures: TextureManager,
+    pub skybox: Option<SkyboxPipeline>,
     meshes: HashMap<MeshId, Mesh>,
-    materials: HashMap<MaterialId, MaterialEntry>,
     sorted_instances: Vec<SortedInstance>,
     indirect_cmds: Vec<DrawElementsIndirectCommand>,
     next_mesh_id: u32,
-    next_shader_id: u32,
-    next_material_id: u32,
     transform_buffer: PersistentMappedBuffer,
     geometry_pool: GeometryPool,
     width: i32,
@@ -71,12 +49,9 @@ pub struct Renderer {
     pipeline_cache: PipelineCache,
     current_pipeline_id: Option<PipelineStateId>,
 
-    /// Most recently consumed frame. Re-rendered when the producer is silent.
     last_frame: FrameData,
     has_frame: bool,
 
-    /// Fence placed after the last frame that wrote+drew from each transform
-    /// region. `None` until that region has been used at least once.
     region_fences: [Option<glow::Fence>; TRANSFORM_REGIONS],
     frame_index: u64,
     pending_draws: Vec<(PipelineStateId, DrawElementsIndirectCommand)>,
@@ -105,16 +80,16 @@ impl Renderer {
         Self {
             gl,
             read_handle,
-            shaders: HashMap::new(),
+            shaders: ShaderManager::new(),
+            materials: MaterialManager::new(),
+            textures: TextureManager::new(),
+            skybox: None,
             meshes: HashMap::new(),
-            materials: HashMap::new(),
             sorted_instances: Vec::with_capacity(MAX_OBJECTS),
             indirect_cmds: Vec::with_capacity(1024),
             transform_buffer,
             geometry_pool,
             next_mesh_id: 0,
-            next_shader_id: 0,
-            next_material_id: 0,
             width: 1280,
             height: 720,
             scene: Scene::new(),
@@ -131,10 +106,11 @@ impl Renderer {
         }
     }
 
+    pub fn context(&self) -> Arc<glow::Context> {
+        self.gl.clone()
+    }
+
     // ── Scene delegation API ─────────────────────────────────────────────────
-    // (unchanged — add_object, remove_object, set_transform, set_position,
-    //  set_position_rotation, set_mdi_strategy, load_mesh, load_shader,
-    //  load_shader_from_files, load_shaders_from_dir, create_material, resize)
 
     pub fn add_object(
         &mut self,
@@ -144,9 +120,11 @@ impl Renderer {
     ) -> ObjectHandle {
         self.scene.add_object(mesh_id, material_id, kind)
     }
+
     pub fn remove_object(&mut self, handle: ObjectHandle) {
         self.scene.remove_object(handle);
     }
+
     pub fn set_transform(
         &mut self,
         handle: ObjectHandle,
@@ -156,9 +134,11 @@ impl Renderer {
     ) {
         self.scene.set_transform(handle, pos, rot, scale);
     }
+
     pub fn set_position(&mut self, handle: ObjectHandle, pos: glam::Vec3) {
         self.scene.set_position(handle, pos);
     }
+
     pub fn set_position_rotation(
         &mut self,
         handle: ObjectHandle,
@@ -167,22 +147,69 @@ impl Renderer {
     ) {
         self.scene.set_position_rotation(handle, pos, rot);
     }
+
     pub fn set_mdi_strategy(&mut self, strategy: MdiStrategy) {
         self.mdi_strategy = strategy;
     }
+
+    // ── Shader & Material facade API ─────────────────────────────────────────
+
+    pub fn load_shader(&mut self, vs: &str, gs: Option<&str>, fs: &str) -> ShaderId {
+        self.shaders.load_shader(self.gl.clone(), vs, gs, fs)
+    }
+
+    pub fn load_shader_from_files(
+        &mut self,
+        vs_path: &Path,
+        gs_path: Option<&Path>,
+        fs_path: &Path,
+    ) -> Result<ShaderId, String> {
+        self.shaders
+            .load_shader_from_files(self.gl.clone(), vs_path, gs_path, fs_path)
+    }
+
+    pub fn load_shaders_from_dir(
+        &mut self,
+        dir: &Path,
+    ) -> Result<HashMap<String, ShaderId>, String> {
+        self.shaders.load_shaders_from_dir(self.gl.clone(), dir)
+    }
+
+    pub fn load_shaders_from_include_dir(
+        &mut self,
+        dir: &include_dir::Dir,
+    ) -> Result<HashMap<String, ShaderId>, String> {
+        self.shaders
+            .load_shaders_from_include_dir(self.gl.clone(), dir)
+    }
+
+    pub fn create_material(
+        &mut self,
+        shader_id: ShaderId,
+        pipeline_state: PipelineState,
+    ) -> MaterialId {
+        let pipeline_id = self.pipeline_cache.register(pipeline_state);
+        self.materials.create_material(shader_id, pipeline_id)
+    }
+
+    pub fn create_material_with_texture(
+        &mut self,
+        shader_id: ShaderId,
+        pipeline_state: PipelineState,
+        texture_id: Option<TextureId>,
+    ) -> MaterialId {
+        let pipeline_id = self.pipeline_cache.register(pipeline_state);
+        self.materials
+            .create_material_with_texture(shader_id, pipeline_id, texture_id)
+    }
+
+    // ── Mesh & Skybox API ────────────────────────────────────────────────────
 
     pub fn load_mesh(&mut self, mut data: MeshData) -> Option<MeshId> {
         data.fix_winding();
         self.insert_mesh(data)
     }
 
-    /// Like `load_mesh`, but skips winding correction. `fix_winding` flips
-    /// triangles based on a single whole-mesh centroid — correct for convex
-    /// meshes (cubes, quads) but wrong for concave geometry like a voxel
-    /// chunk, where a face can legitimately point away from the chunk's
-    /// overall centroid while still being correctly wound. Use this for
-    /// callers (the voxel mesher) that already guarantee correct per-face
-    /// CCW winding.
     pub fn load_mesh_trusted_winding(&mut self, data: MeshData) -> Option<MeshId> {
         self.insert_mesh(data)
     }
@@ -207,16 +234,9 @@ impl Renderer {
         Some(id)
     }
 
-    /// Frees a mesh's GPU-side storage and removes it from the mesh table.
-    ///
-    /// Caller's responsibility: remove any `Scene` objects or dynamic
-    /// `RenderCommand`s that still reference this `MeshId` *before* calling
-    /// this. The renderer doesn't scan the scene to null out dangling
-    /// references — that would mean an O(objects) walk on every chunk
-    /// unload, which defeats the point of a streaming world.
     pub fn unload_mesh(&mut self, mesh_id: MeshId) {
         if let Some(mesh) = self.meshes.remove(&mesh_id) {
-            self.geometry_pool.free(crate::geometry_pool::MeshRange {
+            self.geometry_pool.free(crate::resources::geometry_pool::MeshRange {
                 base_vertex: mesh.base_vertex,
                 first_index: mesh.first_index,
                 index_count: mesh.index_count,
@@ -226,8 +246,24 @@ impl Renderer {
         }
     }
 
-    /// (vertex, index) free-space stats — useful on a debug HUD to watch
-    /// pool pressure as chunks stream in/out.
+    pub fn setup_skybox(&mut self, vs_src: &str, fs_src: &str) -> ShaderId {
+        let shader_id = self.load_shader(vs_src, None, fs_src);
+        self.skybox = Some(SkyboxPipeline::new(self.gl.clone(), shader_id));
+        shader_id
+    }
+
+    pub fn enable_skybox(&mut self, enable: bool) {
+        if let Some(skybox) = &mut self.skybox {
+            skybox.enabled = enable;
+        }
+    }
+
+    pub fn set_skybox_color(&mut self, color: glam::Vec3) {
+        if let Some(skybox) = &mut self.skybox {
+            skybox.color = color;
+        }
+    }
+
     pub fn mesh_pool_stats(&self) -> ((usize, usize), (usize, usize)) {
         (
             (
@@ -241,162 +277,6 @@ impl Renderer {
         )
     }
 
-    pub fn load_shader(&mut self, vs: &str, gs: Option<&str>, fs: &str) -> ShaderId {
-        let id = ShaderId(self.next_shader_id);
-        self.next_shader_id += 1;
-        let shader =
-            ShaderProgram::new(self.gl.clone(), vs, gs, fs).expect("Failed to compile shader");
-        self.shaders.insert(id, shader);
-        id
-    }
-
-    pub fn load_shader_from_files(
-        &mut self,
-        vs_path: &Path,
-        gs_path: Option<&Path>,
-        fs_path: &Path,
-    ) -> Result<ShaderId, String> {
-        let id = ShaderId(self.next_shader_id);
-        self.next_shader_id += 1;
-        let shader = ShaderProgram::from_files(self.gl.clone(), vs_path, gs_path, fs_path)?;
-        self.shaders.insert(id, shader);
-        Ok(id)
-    }
-
-    pub fn load_shaders_from_dir(
-        &mut self,
-        dir: &Path,
-    ) -> Result<HashMap<String, ShaderId>, String> {
-        let mut loaded = HashMap::new();
-
-        if !dir.is_dir() {
-            return Err(format!("Shader directory {:?} does not exist.", dir));
-        }
-
-        for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
-            let path = entry.map_err(|e| e.to_string())?.path();
-
-            if path.extension().and_then(|s| s.to_str()) == Some("vert") {
-                let stem = path.file_stem().unwrap().to_str().unwrap().to_string();
-                let frag_path = path.with_extension("frag");
-                let geom_path = path.with_extension("geom");
-
-                if frag_path.exists() {
-                    let gs = if geom_path.exists() {
-                        Some(geom_path.as_path())
-                    } else {
-                        None
-                    };
-                    match self.load_shader_from_files(&path, gs, &frag_path) {
-                        Ok(id) => {
-                            log::info!(
-                                "Loaded shader: '{}'{}",
-                                stem,
-                                if gs.is_some() {
-                                    " (+ geometry stage)"
-                                } else {
-                                    ""
-                                }
-                            );
-                            loaded.insert(stem, id);
-                        }
-                        Err(e) => {
-                            log::error!("Failed to compile shader '{}': {}", stem, e);
-                            return Err(e);
-                        }
-                    }
-                } else {
-                    log::warn!("Found {}.vert but no matching .frag — skipped.", stem);
-                }
-            }
-        }
-
-        Ok(loaded)
-    }
-
-    pub fn load_shaders_from_include_dir(
-        &mut self,
-        dir: &include_dir::Dir,
-    ) -> Result<HashMap<String, ShaderId>, String> {
-        use include_dir::DirEntry;
-
-        let mut loaded = HashMap::new();
-
-        for entry in dir.entries() {
-            let file = match entry {
-                DirEntry::File(file) => file,
-                DirEntry::Dir(_) => continue,
-            };
-
-            let path = file.path();
-
-            if path.extension().and_then(|e| e.to_str()) != Some("vert") {
-                continue;
-            }
-
-            let stem = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .ok_or_else(|| "Invalid shader filename".to_string())?
-                .to_string();
-
-            let vert = file
-                .contents_utf8()
-                .ok_or_else(|| format!("{} is not UTF-8", path.display()))?;
-
-            let frag_name = format!("{stem}.frag");
-            let geom_name = format!("{stem}.geom");
-
-            let frag = dir
-                .get_file(&frag_name)
-                .ok_or_else(|| format!("Missing fragment shader for '{stem}'"))?
-                .contents_utf8()
-                .ok_or_else(|| format!("{frag_name} is not UTF-8"))?;
-
-            let geom = dir
-                .get_file(&geom_name)
-                .map(|f| {
-                    f.contents_utf8()
-                        .ok_or_else(|| format!("{geom_name} is not UTF-8"))
-                })
-                .transpose()?;
-
-            let id = self.load_shader(vert, geom, frag);
-
-            log::info!(
-                "Loaded shader: '{}'{}",
-                stem,
-                if geom.is_some() {
-                    " (+ geometry stage)"
-                } else {
-                    ""
-                }
-            );
-
-            loaded.insert(stem, id);
-        }
-
-        Ok(loaded)
-    }
-
-    pub fn create_material(
-        &mut self,
-        shader_id: ShaderId,
-        pipeline_state: PipelineState,
-    ) -> MaterialId {
-        let id = MaterialId(self.next_material_id);
-        self.next_material_id += 1;
-        let pipeline_id = self.pipeline_cache.register(pipeline_state);
-        self.materials.insert(
-            id,
-            MaterialEntry {
-                shader_id,
-                pipeline_id,
-            },
-        );
-        id
-    }
-
     pub fn resize(&mut self, width: i32, height: i32) {
         self.width = width;
         self.height = height;
@@ -407,17 +287,11 @@ impl Renderer {
 
     // ── Transform-region synchronization ────────────────────────────────────
 
-    /// Blocks the CPU until the GPU has finished reading whatever data was
-    /// last written into `region` (if anything). Must be called before any
-    /// `write_instance` calls target that region this frame.
     fn wait_for_region(&mut self, region: usize) {
         let Some(fence) = self.region_fences[region].take() else {
-            return; // Region hasn't been used yet — nothing to wait on.
+            return;
         };
         unsafe {
-            // 1s safety timeout, re-issued in a loop. In steady state this
-            // should return ALREADY_SIGNALED or CONDITION_SATISFIED almost
-            // immediately — the GPU is rarely more than a frame or two behind.
             const TIMEOUT_NS: i32 = 1_000_000_000;
             loop {
                 let status =
@@ -443,8 +317,6 @@ impl Renderer {
         }
     }
 
-    /// Places a fence after all draws that read from `region` this frame, so
-    /// a future `wait_for_region` call knows when it's safe to reuse it.
     fn fence_region(&mut self, region: usize) {
         unsafe {
             match self.gl.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0) {
@@ -454,21 +326,12 @@ impl Renderer {
         }
     }
 
-    // New public method, anywhere in impl Renderer:
-    /// Frustum planes from the most recent successful `render()` call (3D
-    /// pass only). `None` until the first frame has been consumed. Used by
-    /// the demo's chunk streaming to decide GPU promotion/eviction.
     pub fn current_frustum(&self) -> Option<[Vec4; 6]> {
         self.last_frustum
     }
 
     // ── Render ───────────────────────────────────────────────────────────────
 
-    /// Main render entry point.
-    ///
-    /// Depth mask is forced `true` before clearing because the UI pipeline
-    /// sets it to `false`, and OpenGL silently ignores
-    /// `glClear(GL_DEPTH_BUFFER_BIT)` when the mask is off.
     pub fn render(&mut self) {
         if self.read_handle.consume(&mut self.last_frame) {
             self.has_frame = true;
@@ -484,8 +347,6 @@ impl Renderer {
             return;
         }
 
-        // Pick this frame's transform-buffer region and make sure the GPU is
-        // done with whatever was last written there before we touch it.
         let region = (self.frame_index % TRANSFORM_REGIONS as u64) as usize;
         self.wait_for_region(region);
         let region_base = region * MAX_OBJECTS;
@@ -493,7 +354,7 @@ impl Renderer {
 
         self.current_pipeline_id = None;
 
-        // ── PASS 1: 3D scene (perspective + frustum culling) ─────────────────
+        // ── PASS 0: Skybox ────────────────────────────────────────────────────
         let view = math::camera_to_view_matrix(
             self.last_frame.camera_position,
             self.last_frame.camera_rotation,
@@ -505,7 +366,13 @@ impl Renderer {
             self.last_frame.camera_far,
         );
         let vp = proj * view;
+        let inv_vp = vp.inverse();
 
+        if let Some(skybox) = &self.skybox {
+            skybox.draw(&self.shaders, &inv_vp);
+        }
+
+        // ── PASS 1: 3D scene ──────────────────────────────────────────────────
         let frustum = math::extract_frustum_planes(vp);
         self.last_frustum = Some(frustum);
 
@@ -529,7 +396,7 @@ impl Renderer {
         transform_offset =
             self.render_instances(&vp, transform_offset, region_limit, Some(&frustum));
 
-        // ── PASS 2: UI overlay (orthographic, no frustum culling) ────────────
+        // ── PASS 2: UI overlay ────────────────────────────────────────────────
         if !self.last_frame.ui_commands.is_empty() {
             let w = self.width as f32;
             let h = self.height as f32;
@@ -550,20 +417,10 @@ impl Renderer {
             self.render_instances(&ui_proj, transform_offset, region_limit, None);
         }
 
-        // All draws that read this region have now been issued — fence it so
-        // the wait 3 frames from now knows when it's safe to overwrite again.
         self.fence_region(region);
         self.frame_index = self.frame_index.wrapping_add(1);
     }
 
-    /// Writes instances into the transform buffer and issues draw calls,
-    /// optionally skipping objects whose bounding sphere is outside the frustum.
-    ///
-    /// `region_limit` is the exclusive upper bound of the current transform
-    /// region — replaces the old bare `MAX_OBJECTS` check now that the buffer
-    /// holds `TRANSFORM_REGIONS` regions back-to-back.
-    ///
-    /// Returns the next free slot in the transform buffer.
     fn render_instances(
         &mut self,
         vp: &glam::Mat4,
@@ -594,12 +451,6 @@ impl Renderer {
                 let radius = mesh.bounding_radius * inst.instance.scale + 0.5;
 
                 if !sphere_inside_frustum(center, radius, planes) {
-                    log::debug!(
-                        "CULLED: center={:.2?} radius={:.3} distances={:.3?}",
-                        center.to_array(),
-                        radius,
-                        planes.map(|p| p.x * center.x + p.y * center.y + p.z * center.z + p.w)
-                    );
                     continue;
                 }
             }
@@ -620,11 +471,6 @@ impl Renderer {
                 .memory_barrier(glow::CLIENT_MAPPED_BUFFER_BARRIER_BIT);
         }
 
-        // ── Phase 1: build one command per (material, mesh) run ───────────────
-        // Still one command per run — that's what defines a valid
-        // base_vertex/base_instance/instance_count — but we no longer dispatch
-        // immediately. Collecting first lets runs that share a pipeline get
-        // batched into a single upload + dispatch below.
         self.pending_draws.clear();
 
         let mut vi = 0;
@@ -644,7 +490,11 @@ impl Renderer {
             }
             let group_size = group_end - vi;
 
-            let material_entry = *self.materials.get(&mat_id).expect("Material ID not found");
+            let material_entry = self
+                .materials
+                .get(mat_id)
+                .cloned()
+                .expect("Material ID not found");
             let mesh = self.meshes.get(&mesh_id).expect("Mesh ID not found");
             let base_instance = (start_offset + vi) as u32;
 
@@ -660,13 +510,6 @@ impl Renderer {
             vi = group_end;
         }
 
-        // ── Phase 2: batch by pipeline ─────────────────────────────────────────
-        // One apply_pipeline + one shader.set_vp + one indirect upload + one
-        // dispatch per contiguous run of matching pipeline state, instead of
-        // per (material, mesh) group. This is what actually reduces CPU-side
-        // uploads and GL state changes — and it's a drop-in upgrade path to a
-        // true single-call glMultiDrawElementsIndirect the moment glow exposes
-        // it, since dispatch() already takes cmd_count.
         self.pending_draws
             .sort_by_key(|(pipeline_id, _)| pipeline_id.0);
 
@@ -692,7 +535,7 @@ impl Renderer {
 
             let shader = self
                 .shaders
-                .get(&ShaderId(pipeline_state.shader_id))
+                .get(ShaderId(pipeline_state.shader_id))
                 .expect("Shader ID not found");
             shader.set_vp(vp);
 
@@ -732,19 +575,19 @@ impl Renderer {
 
         let shader = self
             .shaders
-            .get(&ShaderId(pipeline.shader_id))
+            .get(ShaderId(pipeline.shader_id))
             .expect("Shader not found in apply_pipeline");
 
         unsafe {
             self.gl.use_program(Some(shader.program));
 
             match pipeline.cull_mode {
-                crate::pipeline::CullMode::None => self.gl.disable(glow::CULL_FACE),
-                crate::pipeline::CullMode::Front => {
+                crate::render::pipeline::CullMode::None => self.gl.disable(glow::CULL_FACE),
+                crate::render::pipeline::CullMode::Front => {
                     self.gl.enable(glow::CULL_FACE);
                     self.gl.cull_face(glow::FRONT);
                 }
-                crate::pipeline::CullMode::Back => {
+                crate::render::pipeline::CullMode::Back => {
                     self.gl.enable(glow::CULL_FACE);
                     self.gl.cull_face(glow::BACK);
                 }
@@ -772,7 +615,7 @@ impl Renderer {
     }
 
     pub fn upload_shader_vec3(&mut self, shader_id: ShaderId, name: &str, v: glam::Vec3) -> bool {
-        if let Some(shader) = self.shaders.get(&shader_id) {
+        if let Some(shader) = self.shaders.get(shader_id) {
             unsafe {
                 self.gl.use_program(Some(shader.program));
             }
@@ -783,7 +626,7 @@ impl Renderer {
     }
 
     pub fn upload_shader_f32(&mut self, shader_id: ShaderId, name: &str, v: f32) -> bool {
-        if let Some(shader) = self.shaders.get(&shader_id) {
+        if let Some(shader) = self.shaders.get(shader_id) {
             unsafe {
                 self.gl.use_program(Some(shader.program));
             }
