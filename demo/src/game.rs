@@ -1,5 +1,9 @@
+// demo/src/game.rs
 use glam::{EulerRot, Quat, Vec3};
-use rendering_engine::frame_data::RenderCommand as EngineRenderCommand;
+use rendering_engine::{
+    frame_data::RenderCommand as EngineRenderCommand,
+    math::{camera_to_projection_matrix, camera_to_view_matrix, extract_frustum_planes},
+};
 
 use crate::{font::emit_ui_text, state::DemoState};
 
@@ -38,7 +42,18 @@ pub fn update(state: &mut DemoState, dt: f32) {
     }
     state.camera_pos += velocity * dt;
 
-    state.world.update(state.camera_pos);
+    // Compute frustum planes using the engine’s helpers.
+    let view = camera_to_view_matrix(state.camera_pos, cam_rot);
+    let proj = camera_to_projection_matrix(
+        state.config.fov_degrees.to_radians(),
+        state.width as f32 / state.height as f32,
+        state.config.near_plane,
+        state.config.far_plane,
+    );
+    let vp = proj * view;
+    let frustum = extract_frustum_planes(vp);
+
+    state.world.update(state.camera_pos, &frustum);
 }
 
 /// Camera + a minimal HUD. Terrain never passes through here — it lives on
@@ -55,7 +70,7 @@ pub fn build_frame(state: &mut DemoState) {
     frame.camera_fov = state.config.fov_degrees.to_radians();
     frame.camera_aspect_ratio = state.width as f32 / state.height as f32;
     frame.camera_near = state.config.near_plane;
-    frame.camera_far = state.config.far_plane; // terrain draws much further than the old single-cube demo
+    frame.camera_far = state.config.far_plane;
 
     emit_ui_text(
         &mut frame.ui_commands,
