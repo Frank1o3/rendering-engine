@@ -34,6 +34,5 @@
     "files.autoSave": "afterDelay",
     "files.autoSaveDelay": 500,
     "git.autofetch": "all",
-    "git.autofetchPeriod": 60,
-    
+    "git.autofetchPeriod": 60
 }

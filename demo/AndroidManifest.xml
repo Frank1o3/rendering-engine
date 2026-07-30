@@ -12,14 +12,16 @@
 
     <application
         android:label="Rendering Engine Demo"
-        android:hasCode="true">
+        android:hasCode="true"
+        android:isGame="true"
+        android:theme="@style/GameTheme">
 
         <activity
             android:name="android.app.NativeActivity"
             android:exported="true"
             android:configChanges="orientation|keyboardHidden|screenSize"
             android:launchMode="singleTask"
-            android:screenOrientation="sensorLandscape">
+            android:screenOrientation="landscape">
 
             <meta-data
                 android:name="android.app.lib_name"
@@ -27,12 +29,9 @@
 
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
         </activity>
-
     </application>
-
 </manifest>

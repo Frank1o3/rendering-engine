@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Custom theme tracking fallback fullscreen logic -->
+    <style name="GameTheme" parent="@android:style/Theme.NoTitleBar.Fullscreen">
+        <!-- Allows your GL surface area to render behind notch screen shapes -->
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <!-- Hides the bottom navigation buttons panel on older APIs -->
+        <item name="android:windowHideNavigation">true</item>
+    </style>
+</resources>
