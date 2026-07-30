@@ -80,6 +80,7 @@ pub struct Renderer {
     region_fences: [Option<glow::Fence>; TRANSFORM_REGIONS],
     frame_index: u64,
     pending_draws: Vec<(PipelineStateId, DrawElementsIndirectCommand)>,
+    last_frustum: Option<[Vec4; 6]>,
 }
 
 impl Renderer {
@@ -126,6 +127,7 @@ impl Renderer {
             region_fences: [None; TRANSFORM_REGIONS],
             frame_index: 0,
             pending_draws: Vec::with_capacity(1024),
+            last_frustum: None,
         }
     }
 
@@ -452,6 +454,14 @@ impl Renderer {
         }
     }
 
+    // New public method, anywhere in impl Renderer:
+    /// Frustum planes from the most recent successful `render()` call (3D
+    /// pass only). `None` until the first frame has been consumed. Used by
+    /// the demo's chunk streaming to decide GPU promotion/eviction.
+    pub fn current_frustum(&self) -> Option<[Vec4; 6]> {
+        self.last_frustum
+    }
+
     // ── Render ───────────────────────────────────────────────────────────────
 
     /// Main render entry point.
@@ -497,6 +507,7 @@ impl Renderer {
         let vp = proj * view;
 
         let frustum = math::extract_frustum_planes(vp);
+        self.last_frustum = Some(frustum);
 
         self.scene.flush_dirty();
         self.scene.collect_sorted_into(&mut self.sorted_instances);

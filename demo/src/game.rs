@@ -53,7 +53,7 @@ pub fn update(state: &mut DemoState, dt: f32) {
     let vp = proj * view;
     let frustum = extract_frustum_planes(vp);
 
-    state.world.update(state.camera_pos, &frustum);
+    state.world.update(state.camera_pos, forward, &frustum);
 }
 
 /// Camera + a minimal HUD. Terrain never passes through here — it lives on
@@ -86,6 +86,14 @@ pub fn build_frame(state: &mut DemoState) {
         let r = crate::touch::vsync_button_rect(state.width as f32, state.height as f32);
         frame.ui_commands.push(EngineRenderCommand {
             mesh_id: state.assets.vsync_button_mesh,
+            material_id: state.assets.ui_material,
+            position: Vec3::new(r.x, r.y, 0.0),
+            rotation: Quat::IDENTITY,
+            scale: r.w,
+        });
+        let r = crate::touch::wireframe_button_rect(state.width as f32, state.height as f32);
+        frame.ui_commands.push(EngineRenderCommand {
+            mesh_id: state.assets.wireframe_button_mesh,
             material_id: state.assets.ui_material,
             position: Vec3::new(r.x, r.y, 0.0),
             rotation: Quat::IDENTITY,

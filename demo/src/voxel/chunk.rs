@@ -1,6 +1,6 @@
 // src/voxel/chunk.rs
 
-use glam::Vec3;
+use glam::{Vec3, Vec4};
 
 use super::block::BlockId;
 
@@ -28,6 +28,37 @@ impl ChunkPos {
             0.0,
             (self.z * CHUNK_SIZE_Z as i32) as f32,
         )
+    }
+    /// World-space (min, max) corners of this chunk's full-height column.
+    pub fn aabb(&self) -> (Vec3, Vec3) {
+        let min = self.world_origin();
+        let max = min
+            + Vec3::new(
+                CHUNK_SIZE_X as f32,
+                CHUNK_HEIGHT as f32,
+                CHUNK_SIZE_Z as f32,
+            );
+        (min, max)
+    }
+
+    /// AABB-vs-frustum-planes visibility test. Single source of truth so
+    /// `World`'s load prioritization and the render thread's GPU
+    /// promote/evict decisions never disagree about what's "in view."
+    pub fn is_visible(&self, planes: &[Vec4; 6]) -> bool {
+        let (min, max) = self.aabb();
+        for plane in planes {
+            let normal = plane.truncate();
+            let d = plane.w;
+            let p = Vec3::new(
+                if normal.x > 0.0 { max.x } else { min.x },
+                if normal.y > 0.0 { max.y } else { min.y },
+                if normal.z > 0.0 { max.z } else { min.z },
+            );
+            if normal.dot(p) + d < 0.0 {
+                return false;
+            }
+        }
+        true
     }
 }
 

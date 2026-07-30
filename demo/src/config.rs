@@ -27,11 +27,11 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            render_distance: 12,
-            fly_speed: 12.0,
-            mouse_sensitivity: 0.002,
+            render_distance: 20,
+            fly_speed: 24.0,
+            mouse_sensitivity: 0.004,
             touch_look_sensitivity: 0.004,
-            fov_degrees: 95.0,
+            fov_degrees: 95.5,
             near_plane: 0.1,
             far_plane: 700.0,
             window_width: 1280,

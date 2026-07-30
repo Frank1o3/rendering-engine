@@ -1,5 +1,12 @@
 use std::{
-    collections::HashMap, sync::{Arc, atomic::{AtomicBool, AtomicU64}, mpsc::SyncSender}, thread::JoinHandle, time::Instant,
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64},
+        mpsc::SyncSender,
+    },
+    thread::JoinHandle,
+    time::Instant,
 };
 
 use glam::Vec3;
@@ -29,6 +36,7 @@ pub struct Assets {
     pub quad_mesh: MeshId,
     pub button_quad_mesh: MeshId,
     pub vsync_button_mesh: MeshId,
+    pub wireframe_button_mesh: MeshId,
     pub terrain_material: MaterialId,
     pub ui_material: MaterialId,
     pub lit_shader: ShaderId,
@@ -64,6 +72,7 @@ pub struct DemoState {
     pub config: crate::config::Config,
     pub frame_counter: Arc<AtomicU64>,
     pub last_frame_counter: u64,
+    pub wireframe_enabled: Arc<AtomicBool>,
 }
 
 impl DemoState {

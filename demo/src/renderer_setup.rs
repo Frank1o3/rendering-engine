@@ -27,6 +27,7 @@ use std::time::Instant;
 /// makes the context current and never issues a GL call itself.
 pub fn create_demo_state(event_loop: &ActiveEventLoop) -> DemoState {
     let config = crate::config::Config::load_or_default();
+    let wireframe_enabled = Arc::new(AtomicBool::new(false));
     let vsync_enabled = Arc::new(AtomicBool::new(config.vsync_default));
     let template = ConfigTemplateBuilder::new();
     let frame_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -78,6 +79,7 @@ pub fn create_demo_state(event_loop: &ActiveEventLoop) -> DemoState {
         read_handle,
         vsync_enabled.clone(),
         frame_counter.clone(),
+        wireframe_enabled.clone(),
     );
 
     // Block once, briefly, until the render thread has compiled shaders and
@@ -108,6 +110,7 @@ pub fn create_demo_state(event_loop: &ActiveEventLoop) -> DemoState {
         current_fps: 0.0,
         last_fps_update: Instant::now(),
         vsync_enabled,
+        wireframe_enabled,
         config,
         frame_counter,
         last_frame_counter: 0,

@@ -34,6 +34,7 @@ pub fn pack_normal(n: [f32; 3]) -> [i8; 4] {
     [clamp(n[0]), clamp(n[1]), clamp(n[2]), 0]
 }
 
+#[derive(Clone)]
 pub struct MeshData {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,

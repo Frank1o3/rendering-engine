@@ -37,13 +37,14 @@ impl Rect {
 pub enum TouchKind {
     Button(ButtonId),
     VsyncToggle,
+    WireFrame,
     Look { last: (f32, f32) },
 }
 
-/// Vsync toggle button — smaller than the movement buttons, top-right corner,
-/// clear of both the look-drag area and the D-pad/up-down cluster.
+/// Vsync / Wireframe buttons.
 pub const VSYNC_BTN: f32 = 96.0;
 pub const VSYNC_MARGIN: f32 = 32.0;
+pub const VSYNC_GAP: f32 = 20.0;
 
 /// Button layout constants.
 pub const BTN: f32 = 172.0;
@@ -136,6 +137,15 @@ pub fn vsync_button_rect(width: f32, _height: f32) -> Rect {
     Rect {
         x: width - VSYNC_MARGIN - VSYNC_BTN,
         y: VSYNC_MARGIN,
+        w: VSYNC_BTN,
+        h: VSYNC_BTN,
+    }
+}
+
+pub fn wireframe_button_rect(width: f32, _height: f32) -> Rect {
+    Rect {
+        x: width - VSYNC_MARGIN - VSYNC_BTN,
+        y: VSYNC_MARGIN + VSYNC_BTN + VSYNC_GAP,
         w: VSYNC_BTN,
         h: VSYNC_BTN,
     }
