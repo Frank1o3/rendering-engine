@@ -12,6 +12,9 @@ mod state;
 mod touch;
 mod voxel;
 
+// =====================================================================
+// Android Configuration Platform Hook
+// =====================================================================
 #[cfg(target_os = "android")]
 pub mod android {
     use crate::app::App;
@@ -20,8 +23,6 @@ pub mod android {
     use winit::event_loop::EventLoop;
     use winit::platform::android::EventLoopBuilderExtAndroid;
 
-    // Captured once, before Config is ever loaded — internal_data_path()
-    // is only reachable through the AndroidApp handle android_main receives.
     pub static DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
 
     #[unsafe(no_mangle)]
@@ -31,6 +32,25 @@ pub mod android {
         }
 
         let event_loop = EventLoop::builder().with_android_app(app).build().unwrap();
+        let mut app = App::new();
+        event_loop.run_app(&mut app).unwrap();
+    }
+}
+
+// =====================================================================
+// iOS Configuration Platform Hook (Added for Winit 0.30+)
+// =====================================================================
+#[cfg(target_os = "ios")]
+pub mod ios {
+    use crate::app::App;
+    use winit::event_loop::EventLoop;
+
+    // Registers the runner block with UIKit/UIApplication life-cycle loops.
+    // Winit translates this into a standard C entry symbol context.
+    winit::main_app!(ios_main);
+
+    fn ios_main() {
+        let event_loop = EventLoop::new().unwrap();
         let mut app = App::new();
         event_loop.run_app(&mut app).unwrap();
     }
