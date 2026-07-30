@@ -98,7 +98,7 @@ jobs:
                   path: target/release/desktop.exe
 
             ####################################################################
-            # macOS Desktop
+            # macOS
             ####################################################################
 
             - name: Build macOS Desktop Binary
@@ -108,13 +108,13 @@ jobs:
             - name: Package macOS App Bundle
               if: matrix.target == 'macos-desktop'
               run: |
-                  mkdir -p "target/release/mac-bundle/RenderingEngineDemo.app/Contents/MacOS"
+                  mkdir -p target/release/mac-bundle/RenderingEngineDemo.app/Contents/MacOS
 
-                  # Copy your compiled binary asset
-                  cp target/release/desktop "target/release/mac-bundle/RenderingEngineDemo.app/Contents/MacOS/desktop"
+                  cp target/release/desktop \
+                     target/release/mac-bundle/RenderingEngineDemo.app/Contents/MacOS/desktop
 
-                  # Copy your static file directly from your repo source folder
-                  cp demo/apple/mac_desktop/Info.plist "target/release/mac-bundle/RenderingEngineDemo.app/Contents/Info.plist"
+                  cp demo/apple/mac_desktop/Info.plist \
+                     target/release/mac-bundle/RenderingEngineDemo.app/Contents/Info.plist
 
                   cd target/release/mac-bundle
                   zip -r ../../../RenderingEngineDemo-macOS.zip RenderingEngineDemo.app
@@ -127,7 +127,7 @@ jobs:
                   path: RenderingEngineDemo-macOS.zip
 
             ####################################################################
-            # iOS (Phones & Tablets)
+            # iOS
             ####################################################################
 
             - name: Add iOS Targets
@@ -136,25 +136,31 @@ jobs:
                   rustup target add aarch64-apple-ios
                   rustup target add aarch64-apple-ios-sim
 
-            - name: Install cargo-apple toolchain helper
+            - name: Install cargo-mobile2
               if: matrix.target == 'ios'
               run: cargo install cargo-mobile2
 
-            - name: Build Unsigned iOS App Package
+            - name: Build iOS
               if: matrix.target == 'ios'
               run: |
-                  # We initialize a minimal scaffolding configuration if cargo-mobile metadata doesn't exist
-                  if [ ! -f "apple/RenderingEngineDemo.xcodeproj" ]; then
-                    cargo mobile init --non-interactive || true
-                  fi
-                  # Compiles targets and creates an unsigned build package
-                  cargo apple build --release --no-client
+                  cargo apple build --release -p demo
 
-            - name: Compress iOS Package Build Folder
+            - name: Package iOS Build
               if: matrix.target == 'ios'
+              shell: bash
               run: |
-                  cd target/release
-                  zip -r ../../RenderingEngineDemo-iOS.zip *.app || zip -r ../../RenderingEngineDemo-iOS.zip .
+                  mkdir ios-package
+                  APP=$(find target -type d -name "*.app" | head -n1)
+
+                  if [ -z "$APP" ]; then
+                      echo "No .app bundle produced."
+                      exit 1
+                  fi
+
+                  cp -R "$APP" ios-package/
+
+                  cd ios-package
+                  zip -r ../RenderingEngineDemo-iOS.zip .
 
             - name: Upload iOS Artifact
               if: matrix.target == 'ios'
