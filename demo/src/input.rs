@@ -10,7 +10,7 @@ use winit::{
 
 use crate::{
     state::DemoState,
-    touch::{TOUCH_LOOK_SENSITIVITY, TouchKind, button_rects, set_button_key},
+    touch::{TouchKind, button_rects, set_button_key},
 };
 
 pub fn window_event(state: &mut DemoState, pending_grab: &mut bool, event: &WindowEvent) {
@@ -85,9 +85,9 @@ pub fn window_event(state: &mut DemoState, pending_grab: &mut bool, event: &Wind
                         let dx = x - last.0;
                         let dy = y - last.1;
 
-                        state.camera_yaw -= dx * TOUCH_LOOK_SENSITIVITY;
+                        state.camera_yaw -= dx * state.config.touch_look_sensitivity;
 
-                        state.camera_pitch -= dy * TOUCH_LOOK_SENSITIVITY;
+                        state.camera_pitch -= dy * state.config.touch_look_sensitivity;
 
                         state.camera_pitch = state.camera_pitch.clamp(-1.5, 1.5);
 
@@ -110,8 +110,8 @@ pub fn window_event(state: &mut DemoState, pending_grab: &mut bool, event: &Wind
 pub fn device_event(state: &mut DemoState, event: &DeviceEvent) {
     if let DeviceEvent::MouseMotion { delta } = event {
         if state.cursor_grabbed {
-            state.camera_yaw -= delta.0 as f32 * 0.002;
-            state.camera_pitch -= delta.1 as f32 * 0.002;
+            state.camera_yaw -= delta.0 as f32 * state.config.mouse_sensitivity;
+            state.camera_pitch -= delta.1 as f32 * state.config.mouse_sensitivity;
 
             state.camera_pitch = state.camera_pitch.clamp(-1.5, 1.5);
         }

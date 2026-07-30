@@ -1,4 +1,6 @@
+// demo/src/lib.rs
 pub mod app;
+pub mod config;
 mod font;
 mod game;
 mod input;
@@ -11,13 +13,23 @@ mod touch;
 mod voxel;
 
 #[cfg(target_os = "android")]
-mod android {
+pub mod android {
     use crate::app::App;
+    use std::path::PathBuf;
+    use std::sync::OnceLock;
     use winit::event_loop::EventLoop;
     use winit::platform::android::EventLoopBuilderExtAndroid;
 
+    // Captured once, before Config is ever loaded — internal_data_path()
+    // is only reachable through the AndroidApp handle android_main receives.
+    pub static DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
+
     #[unsafe(no_mangle)]
     pub fn android_main(app: winit::platform::android::activity::AndroidApp) {
+        if let Some(dir) = app.internal_data_path() {
+            let _ = DATA_DIR.set(dir);
+        }
+
         let event_loop = EventLoop::builder().with_android_app(app).build().unwrap();
         let mut app = App::new();
         event_loop.run_app(&mut app).unwrap();

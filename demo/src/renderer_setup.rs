@@ -22,18 +22,17 @@ use glam::Vec3;
 use std::collections::HashMap;
 use std::time::Instant;
 
-const RENDER_DISTANCE: i32 = 8; // 17×17 chunks, full 0..256 height each
-
 /// Builds the window/GL surface/context on the main thread, then immediately
 /// hands the context off to a dedicated render thread. The main thread never
 /// makes the context current and never issues a GL call itself.
 pub fn create_demo_state(event_loop: &ActiveEventLoop) -> DemoState {
-    let vsync_enabled = Arc::new(AtomicBool::new(false));
+    let config = crate::config::Config::load_or_default();
+    let vsync_enabled = Arc::new(AtomicBool::new(config.vsync_default));
     let template = ConfigTemplateBuilder::new();
 
     let window_attributes = Window::default_attributes()
         .with_title("Rendering Engine — OpenGL ES 3.2 3D Demo")
-        .with_inner_size(PhysicalSize::new(1280, 720))
+        .with_inner_size(PhysicalSize::new(config.window_width, config.window_height))
         .with_resizable(false);
 
     let display_builder = DisplayBuilder::new().with_window_attributes(Some(window_attributes));
@@ -82,7 +81,7 @@ pub fn create_demo_state(event_loop: &ActiveEventLoop) -> DemoState {
         .recv()
         .expect("Render thread closed before sending initial assets");
 
-    let world = World::new(RENDER_DISTANCE, render_tx.clone());
+    let world = World::new(config.render_distance, render_tx.clone());
 
     DemoState {
         window,
@@ -90,8 +89,8 @@ pub fn create_demo_state(event_loop: &ActiveEventLoop) -> DemoState {
         render_thread_handle: Some(render_thread_handle),
         write_handle,
         assets,
-        width: 1280,
-        height: 720,
+        width: config.window_width,
+        height: config.window_height,
         camera_pos: Vec3::new(0.0, 80.0, 0.0), // above typical terrain height so you spawn looking down at the world
         camera_yaw: 0.0,
         camera_pitch: 0.0,
@@ -104,5 +103,6 @@ pub fn create_demo_state(event_loop: &ActiveEventLoop) -> DemoState {
         frame_count: 0,
         last_fps_update: Instant::now(),
         vsync_enabled,
+        config,
     }
 }

@@ -65,6 +65,7 @@ pub struct DemoState {
     pub frame_count: u32,
     pub last_fps_update: Instant,
     pub vsync_enabled: Arc<AtomicBool>,
+    pub config: crate::config::Config,
 }
 
 impl DemoState {

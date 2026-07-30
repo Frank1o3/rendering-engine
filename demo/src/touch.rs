@@ -40,9 +40,6 @@ pub enum TouchKind {
     Look { last: (f32, f32) },
 }
 
-/// Camera sensitivity for touch look.
-pub const TOUCH_LOOK_SENSITIVITY: f32 = 0.004;
-
 /// Vsync toggle button — smaller than the movement buttons, top-right corner,
 /// clear of both the look-drag area and the D-pad/up-down cluster.
 pub const VSYNC_BTN: f32 = 96.0;

@@ -3,8 +3,6 @@ use rendering_engine::frame_data::RenderCommand as EngineRenderCommand;
 
 use crate::{font::emit_ui_text, state::DemoState};
 
-const FLY_SPEED: f32 = 12.0;
-
 pub fn init(_state: &mut DemoState) {
     // Nothing to seed — World::update on the first frame does the rest.
 }
@@ -36,9 +34,9 @@ pub fn update(state: &mut DemoState, dt: f32) {
     }
 
     if velocity.length_squared() > 0.0 {
-        velocity = velocity.normalize();
+        velocity = velocity.normalize() * state.config.fly_speed;
     }
-    state.camera_pos += velocity * FLY_SPEED * dt;
+    state.camera_pos += velocity * dt;
 
     state.world.update(state.camera_pos);
 }
@@ -54,10 +52,10 @@ pub fn build_frame(state: &mut DemoState) {
 
     frame.camera_position = state.camera_pos;
     frame.camera_rotation = cam_rot;
-    frame.camera_fov = std::f32::consts::FRAC_PI_3;
+    frame.camera_fov = state.config.fov_degrees.to_radians();
     frame.camera_aspect_ratio = state.width as f32 / state.height as f32;
-    frame.camera_near = 0.1;
-    frame.camera_far = 500.0; // terrain draws much further than the old single-cube demo
+    frame.camera_near = state.config.near_plane;
+    frame.camera_far = state.config.far_plane; // terrain draws much further than the old single-cube demo
 
     emit_ui_text(
         &mut frame.ui_commands,
