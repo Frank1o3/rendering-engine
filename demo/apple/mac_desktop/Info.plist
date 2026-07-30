@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://apple.com">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>desktop</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.frank1o3.renderingengine.demo</string>
+    <key>CFBundleName</key>
+    <string>RenderingEngineDemo</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>10.12</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>
