@@ -1,17 +1,13 @@
-// demo/src/game.rs
 use glam::{EulerRot, Quat, Vec3};
-use rendering_engine::{
-    frame_data::RenderCommand as EngineRenderCommand,
-    math::{camera_to_projection_matrix, camera_to_view_matrix, extract_frustum_planes},
+use rendering_engine::core::math::{
+    camera_to_projection_matrix, camera_to_view_matrix, extract_frustum_planes,
 };
+use rendering_engine::render::frame_data::RenderCommand as EngineRenderCommand;
 
 use crate::{font::emit_ui_text, state::DemoState};
 
-pub fn init(_state: &mut DemoState) {
-    // Nothing to seed — World::update on the first frame does the rest.
-}
+pub fn init(_state: &mut DemoState) {}
 
-/// Fly-camera movement — no gravity, no collision. Exploration only.
 pub fn update(state: &mut DemoState, dt: f32) {
     let cam_rot = Quat::from_euler(EulerRot::YXZ, state.camera_yaw, state.camera_pitch, 0.0);
     let forward = cam_rot * Vec3::NEG_Z;
@@ -42,7 +38,6 @@ pub fn update(state: &mut DemoState, dt: f32) {
     }
     state.camera_pos += velocity * dt;
 
-    // Compute frustum planes using the engine’s helpers.
     let view = camera_to_view_matrix(state.camera_pos, cam_rot);
     let proj = camera_to_projection_matrix(
         state.config.fov_degrees.to_radians(),
@@ -56,8 +51,6 @@ pub fn update(state: &mut DemoState, dt: f32) {
     state.world.update(state.camera_pos, forward, &frustum);
 }
 
-/// Camera + a minimal HUD. Terrain never passes through here — it lives on
-/// the render thread via AddChunk/RemoveChunk.
 pub fn build_frame(state: &mut DemoState) {
     let cam_rot = Quat::from_euler(EulerRot::YXZ, state.camera_yaw, state.camera_pitch, 0.0);
 

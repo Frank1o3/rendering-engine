@@ -1,11 +1,8 @@
-// src/font.rs
-
 use glam::{Quat, Vec3};
 
-use rendering_engine::{
-    engine::{MaterialId, MeshId},
-    frame_data::RenderCommand,
-};
+use rendering_engine::render::frame_data::RenderCommand;
+use rendering_engine::render::renderer::MeshId;
+use rendering_engine::resources::material::MaterialId;
 
 const FONT: [[u8; 5]; 10] = [
     [0b111, 0b101, 0b101, 0b101, 0b111], // 0
@@ -35,13 +32,6 @@ fn char_glyph(ch: char) -> Option<[u8; 5]> {
     }
 }
 
-/// Emits simple 3×5 bitmap text as UI quads.
-///
-/// Supported characters:
-/// - 0-9
-/// - A, C, E, F, I, O, P, R, S
-/// - ':'
-/// - Space
 pub fn emit_ui_text(
     commands: &mut Vec<RenderCommand>,
     mesh_id: MeshId,

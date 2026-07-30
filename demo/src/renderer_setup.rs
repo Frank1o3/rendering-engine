@@ -1,4 +1,3 @@
-// demo/src/renderer_setup.rs
 use std::sync::{Arc, atomic::AtomicBool};
 
 use glutin::{
@@ -10,7 +9,8 @@ use glutin_winit::{DisplayBuilder, GlWindow};
 use raw_window_handle::HasWindowHandle;
 use winit::{dpi::PhysicalSize, event_loop::ActiveEventLoop, window::Window};
 
-use rendering_engine::{frame_data::FrameData, triple_buffer::new_triple_buffer};
+use rendering_engine::core::triple_buffer::new_triple_buffer;
+use rendering_engine::render::frame_data::FrameData;
 
 use crate::{
     render_thread::start_render_thread,
@@ -22,9 +22,6 @@ use glam::Vec3;
 use std::collections::HashMap;
 use std::time::Instant;
 
-/// Builds the window/GL surface/context on the main thread, then immediately
-/// hands the context off to a dedicated render thread. The main thread never
-/// makes the context current and never issues a GL call itself.
 pub fn create_demo_state(event_loop: &ActiveEventLoop) -> DemoState {
     let config = crate::config::Config::load_or_default();
     let wireframe_enabled = Arc::new(AtomicBool::new(false));
@@ -61,7 +58,6 @@ pub fn create_demo_state(event_loop: &ActiveEventLoop) -> DemoState {
         .with_context_api(ContextApi::Gles(Some(Version { major: 3, minor: 2 })))
         .build(Some(window.window_handle().unwrap().as_raw()));
 
-    // NOT current here — ownership + make_current happen on the render thread.
     let not_current = unsafe {
         display
             .create_context(&gl_config, &context_attributes)
@@ -82,9 +78,6 @@ pub fn create_demo_state(event_loop: &ActiveEventLoop) -> DemoState {
         wireframe_enabled.clone(),
     );
 
-    // Block once, briefly, until the render thread has compiled shaders and
-    // uploaded the starting meshes — the game thread needs those IDs before
-    // it can build its first FrameData.
     let assets = assets_rx
         .recv()
         .expect("Render thread closed before sending initial assets");
@@ -99,7 +92,7 @@ pub fn create_demo_state(event_loop: &ActiveEventLoop) -> DemoState {
         assets,
         width: config.window_width,
         height: config.window_height,
-        camera_pos: Vec3::new(0.0, 80.0, 0.0), // above typical terrain height so you spawn looking down at the world
+        camera_pos: Vec3::new(0.0, 80.0, 0.0),
         camera_yaw: 0.0,
         camera_pitch: 0.0,
         keys: Keys::default(),

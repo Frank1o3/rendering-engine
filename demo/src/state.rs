@@ -12,11 +12,11 @@ use std::{
 use glam::Vec3;
 use winit::{event_loop::ActiveEventLoop, window::Window};
 
-use rendering_engine::{
-    engine::{MaterialId, MeshId, ShaderId},
-    frame_data::FrameData,
-    triple_buffer::WriteHandle,
-};
+use rendering_engine::core::triple_buffer::WriteHandle;
+use rendering_engine::render::frame_data::FrameData;
+use rendering_engine::render::renderer::MeshId;
+use rendering_engine::resources::material::MaterialId;
+use rendering_engine::resources::shader::ShaderId;
 
 use crate::{render_thread::RenderCommand, touch::TouchKind, voxel::world::World};
 
@@ -30,8 +30,6 @@ pub struct Keys {
     pub lctrl: bool,
 }
 
-/// Startup-only GPU asset IDs. Terrain meshes are NOT here — they stream in
-/// per-chunk and are tracked entirely on the render thread.
 pub struct Assets {
     pub quad_mesh: MeshId,
     pub button_quad_mesh: MeshId,
@@ -54,7 +52,6 @@ pub struct DemoState {
     pub width: u32,
     pub height: u32,
 
-    // Fly camera — no gravity or collision. Exploration only.
     pub camera_pos: Vec3,
     pub camera_yaw: f32,
     pub camera_pitch: f32,

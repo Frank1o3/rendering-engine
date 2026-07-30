@@ -1,6 +1,5 @@
-// demo/src/voxel/mesher.rs
 use super::chunk::{CHUNK_HEIGHT, CHUNK_SIZE_X, CHUNK_SIZE_Z, Chunk};
-use rendering_engine::mesh::{MeshData, Vertex};
+use rendering_engine::resources::mesh::{MeshData, Vertex};
 
 #[derive(Clone, Copy)]
 struct Face {
@@ -49,11 +48,6 @@ const FACES: [Face; 6] = [
     },
 ];
 
-/// Finds the lowest and highest Y containing a solid block. Most chunks
-/// only occupy a fraction of CHUNK_HEIGHT (256) — scanning/allocating masks
-/// for the full height on every face pass was the main cost driver. Early
-/// exits, so this is cheap in the common case (bottom is solid immediately;
-/// top is found within a few layers of the real surface).
 fn chunk_y_bounds(chunk: &Chunk) -> Option<(i32, i32)> {
     let mut min_y = None;
     'find_min: for y in 0..CHUNK_HEIGHT {
@@ -82,10 +76,6 @@ fn chunk_y_bounds(chunk: &Chunk) -> Option<(i32, i32)> {
     Some((min_y, max_y))
 }
 
-/// Returns (length, offset-into-world-space) for an axis given the chunk's
-/// real Y bounds. X/Z axes are always the full chunk size at offset 0;
-/// the Y axis is clamped to (min_y..=max_y) — this is what shrinks the
-/// mask sizes and slice counts down from 256 to whatever's actually there.
 fn axis_extent(axis: (i32, i32, i32), min_y: i32, max_y: i32) -> (usize, i32) {
     if axis.0 != 0 {
         (CHUNK_SIZE_X, 0)
@@ -101,7 +91,6 @@ pub fn mesh_chunk(chunk: &Chunk, neighbor_solid: impl Fn(i32, i32, i32) -> bool)
     let mut indices = Vec::new();
 
     let Some((min_y, max_y)) = chunk_y_bounds(chunk) else {
-        // Fully-air chunk (e.g. way above terrain) — nothing to mesh.
         return MeshData { vertices, indices };
     };
 
@@ -119,22 +108,19 @@ pub fn mesh_chunk(chunk: &Chunk, neighbor_solid: impl Fn(i32, i32, i32) -> bool)
         let axis_unit = (dx.abs(), dy.abs(), dz.abs());
 
         let (depth_size, depth_axis_off) = axis_extent(face.dir, min_y, max_y);
-        let (u_size, _u_axis_off) = axis_extent(face.u_axis, min_y, max_y); // Y never lands on u
+        let (u_size, _u_axis_off) = axis_extent(face.u_axis, min_y, max_y);
         let (v_size, v_axis_off) = axis_extent(face.v_axis, min_y, max_y);
 
         let to_xyz = |d: i32, u: i32, v: i32| -> (i32, i32, i32) {
             if dx != 0 {
                 (d, v + v_axis_off, u)
             } else if dy != 0 {
-                (u, d, v) // d is already absolute Y (see depth_axis_off below)
+                (u, d, v)
             } else {
                 (u, v + v_axis_off, d)
             }
         };
 
-        // Allocated ONCE per face, reused (cleared) across every depth
-        // slice instead of freshly heap-allocated per slice — this is the
-        // other half of the fix, independent of the height clamp above.
         let mut visible = vec![false; u_size * v_size];
         let mut visited = vec![false; u_size * v_size];
         let idx = |u: usize, v: usize| u * v_size + v;

@@ -14,13 +14,12 @@ use glutin::{
     surface::{GlSurface, Surface, SwapInterval, WindowSurface},
 };
 
-use rendering_engine::{
-    MeshData, ObjectHandle, ObjectKind,
-    engine::{MeshId, Renderer},
-    frame_data::FrameData,
-    pipeline::{BlendFactor, CullMode, DepthFunc, PipelineState},
-    triple_buffer::ReadHandle,
-};
+use rendering_engine::core::triple_buffer::ReadHandle;
+use rendering_engine::render::frame_data::FrameData;
+use rendering_engine::render::pipeline::{BlendFactor, CullMode, DepthFunc, PipelineState};
+use rendering_engine::render::renderer::{MeshId, Renderer};
+use rendering_engine::render::scene::{ObjectHandle, ObjectKind};
+use rendering_engine::resources::mesh::MeshData;
 
 use crate::{
     meshes::{create_button_quad_mesh, create_quad_mesh, create_vsync_button_mesh},
@@ -37,29 +36,14 @@ pub enum RenderCommand {
     Shutdown,
 }
 
-/// A chunk's CPU/GPU residency state. The mesh is always kept on the CPU
-/// once generated; `gpu` is only `Some` while the chunk is actually
-/// uploaded and drawn. `invisible_frames` tracks how long it's been out of
-/// the frustum, used for eviction hysteresis so a brief flick of the
-/// camera doesn't thrash upload/free every frame.
 struct ChunkEntry {
     mesh: MeshData,
     gpu: Option<(MeshId, ObjectHandle)>,
     invisible_frames: u32,
 }
 
-/// GPU uploads (buffer_sub_data into the geometry pool, VAO setup) are the
-/// expensive part — budget them per frame so a big burst of newly-visible
-/// chunks (e.g. spinning around) can't spike a single frame.
 const MAX_CHUNK_GPU_UPLOADS_PER_FRAME: usize = 1;
-/// Evictions are cheaper than uploads but still touch the free-list
-/// allocator and scene bookkeeping — budget lightly to smooth out the case
-/// where many chunks cross the grace threshold in the same frame.
 const MAX_CHUNK_GPU_EVICTIONS_PER_FRAME: usize = 2;
-/// How many consecutive invisible frames before a chunk's GPU resources are
-/// freed. ~1.5s at 60 FPS — long enough that a quick glance away and back
-/// doesn't cause a re-upload, short enough to actually save GPU work when
-/// you're facing away for a while.
 const INVISIBLE_GRACE_FRAMES: u32 = 90;
 
 pub fn start_render_thread(
@@ -149,9 +133,6 @@ pub fn start_render_thread(
         let mut current_vsync = false;
         let mut current_wireframe = false;
 
-        // Every generated chunk lives here on the CPU. GPU residency is
-        // tracked per-entry via `gpu` and streamed in/out based on the
-        // frustum each frame — see the promote/demote step below.
         let mut chunk_entries: HashMap<ChunkPos, ChunkEntry> = HashMap::new();
 
         loop {
@@ -159,8 +140,6 @@ pub fn start_render_thread(
                 Ok(RenderCommand::Render) => {
                     renderer.render();
 
-                    // ── Streaming: promote visible cached chunks to GPU,
-                    // evict long-invisible uploaded chunks back to CPU-only ──
                     if let Some(frustum) = renderer.current_frustum() {
                         let mut upload_budget = MAX_CHUNK_GPU_UPLOADS_PER_FRAME;
                         let mut evict_budget = MAX_CHUNK_GPU_EVICTIONS_PER_FRAME;
@@ -235,8 +214,6 @@ pub fn start_render_thread(
                 }
 
                 Ok(RenderCommand::AddChunk { pos, mesh }) => {
-                    // Cache only — GPU upload is decided by the streaming
-                    // step above, next time a Render command runs.
                     chunk_entries.insert(
                         pos,
                         ChunkEntry {
@@ -248,9 +225,6 @@ pub fn start_render_thread(
                 }
 
                 Ok(RenderCommand::RemoveChunk { pos }) => {
-                    // Truly out of render distance — drop both GPU and CPU
-                    // copies. (Distinct from eviction above, which keeps
-                    // the CPU mesh cached for a fast re-upload.)
                     if let Some(entry) = chunk_entries.remove(&pos) {
                         if let Some((mesh_id, obj)) = entry.gpu {
                             renderer.remove_object(obj);
