@@ -6,7 +6,6 @@
         <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
         <item name="android:windowFullscreen">true</item>
         <item name="android:windowContentOverlay">@null</item>
-        <!-- Hides the bottom navigation buttons panel on older APIs -->
-        <item name="android:windowHideNavigation">true</item>
+        <!-- REMOVED: android:windowHideNavigation is not a real framework attribute -->
     </style>
 </resources>
