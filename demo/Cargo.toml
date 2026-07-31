@@ -4,24 +4,34 @@
     name="demo"
     version="0.1.2"
 
-    [package.metadata.android]
-        build_targets=["aarch64-linux-android", "armv7-linux-androideabi"]
-        label="Rendering Engine Demo"
-        package="com.frank1o3.renderingengine"
+[package.metadata.android]
+    build_targets = ["aarch64-linux-android", "armv7-linux-androideabi"]
+    label = "Rendering Engine Demo"
+    package = "com.frank1o3.renderingengine"
+    resources = "res"          # <-- this line is what's actually missing
 
-        [package.metadata.android.sdk]
-            min_sdk_version=24
-            target_sdk_version=36
+[package.metadata.android.sdk]
+    min_sdk_version = 24
+    target_sdk_version = 36
 
-        [package.metadata.android.signing.release]
-            key_alias="upload"
-            key_password="ENV_KEY_PASSWORD"
-            keystore_password="ENV_KEYSTORE_PASSWORD"
-            path="../keys/upload-keystore.jks"
-    [package.metadata.apple]
-        app_id="com.frank1o3.renderingengine.demo"
-        bundle_version="0.1.2"
-        bundle_version_short="0.1.2"
+[package.metadata.android.application]
+    theme = "@style/GameTheme"
+
+[package.metadata.android.application.activity]
+    orientation = "landscape"
+    config_changes = "orientation|keyboardHidden|screenSize"
+    launch_mode = "singleTask"
+
+[package.metadata.android.signing.release]
+    key_alias = "upload"
+    key_password = "ENV_KEY_PASSWORD"
+    keystore_password = "ENV_KEYSTORE_PASSWORD"
+    path = "../keys/upload-keystore.jks"
+
+[package.metadata.apple]
+    app_id="com.frank1o3.renderingengine.demo"
+    bundle_version="0.1.2"
+    bundle_version_short="0.1.2"
 
 [lib]
     crate-type=["cdylib", "rlib"]
