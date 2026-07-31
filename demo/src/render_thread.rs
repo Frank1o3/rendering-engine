@@ -15,8 +15,9 @@ use glutin::{
 };
 
 use rendering_engine::core::triple_buffer::ReadHandle;
+use rendering_engine::render::{BlendFactor, CullMode, DepthFunc};
 use rendering_engine::render::frame_data::FrameData;
-use rendering_engine::render::pipeline::{BlendFactor, CullMode, DepthFunc, PipelineState};
+use rendering_engine::render::pipeline::PipelineState;
 use rendering_engine::render::renderer::{MeshId, Renderer};
 use rendering_engine::render::scene::{ObjectHandle, ObjectKind};
 use rendering_engine::resources::mesh::MeshData;
@@ -120,7 +121,6 @@ pub fn start_render_thread(
         // ─── Materials ────────────────────────────────────────────────────
         let terrain_material =
             renderer.create_material(lit_shader, PipelineState::default_opaque(lit_shader.0));
-
         let ui_pipeline = PipelineState {
             shader_id: ui_shader.0,
             cull_mode: CullMode::None,

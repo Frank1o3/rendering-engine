@@ -236,13 +236,14 @@ impl Renderer {
 
     pub fn unload_mesh(&mut self, mesh_id: MeshId) {
         if let Some(mesh) = self.meshes.remove(&mesh_id) {
-            self.geometry_pool.free(crate::resources::geometry_pool::MeshRange {
-                base_vertex: mesh.base_vertex,
-                first_index: mesh.first_index,
-                index_count: mesh.index_count,
-                vertex_alloc: mesh.vertex_alloc,
-                index_alloc: mesh.index_alloc,
-            });
+            self.geometry_pool
+                .free(crate::resources::geometry_pool::MeshRange {
+                    base_vertex: mesh.base_vertex,
+                    first_index: mesh.first_index,
+                    index_count: mesh.index_count,
+                    vertex_alloc: mesh.vertex_alloc,
+                    index_alloc: mesh.index_alloc,
+                });
         }
     }
 
