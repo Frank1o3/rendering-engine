@@ -542,9 +542,7 @@ impl Renderer {
             self.indirect_cmds.clear();
             self.indirect_cmds
                 .extend(self.pending_draws[pi..run_end].iter().map(|(_, cmd)| *cmd));
-            self.indirect_buffer.upload(&self.indirect_cmds);
-
-            let cmd_count = self.indirect_cmds.len();
+            let cmd_count = self.indirect_buffer.upload(&self.indirect_cmds);
             if self.mdi_strategy == MdiStrategy::MultiCount {
                 self.indirect_buffer.upload_count(cmd_count as u32);
             }

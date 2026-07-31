@@ -13,6 +13,10 @@
 //   `draw_elements_indirect_offset` calls. The MDI command buffer is still uploaded to
 //   GL_DRAW_INDIRECT_BUFFER as a contiguous array — so a future upgrade that exposes the
 //   real entry point only needs to change the `dispatch` call here, not the upload path.
+//
+// The command buffer uses persistent mapping (buffer_storage + MAP_PERSISTENT_BIT) to
+// avoid per-frame buffer_data_u8_slice re-allocation. Same pattern as PersistentMappedBuffer
+// in core/buffer.rs.
 
 use bytemuck::{Pod, Zeroable};
 use glow::HasContext;
@@ -70,7 +74,15 @@ pub enum MdiStrategy {
     MultiCount,
 }
 
+/// Maximum number of indirect draw commands the persistently-mapped buffer can hold.
+/// 4096 commands × 20 bytes = 80 KiB — plenty for thousands of chunks.
+const MAX_INDIRECT_COMMANDS: usize = 4096;
+
 /// GPU-side buffer for indirect draw commands.
+///
+/// Uses persistent mapping (`buffer_storage` + `MAP_PERSISTENT_BIT`) to eliminate
+/// per-frame `buffer_data_u8_slice` re-allocation. Commands are written directly
+/// into the mapped region via pointer copy.
 ///
 /// Manages a `GL_DRAW_INDIRECT_BUFFER` and an optional `GL_PARAMETER_BUFFER`
 /// (for `MultiCount` strategy).
@@ -78,10 +90,18 @@ pub struct IndirectBuffer {
     gl: Arc<glow::Context>,
     /// The indirect command buffer (GL_DRAW_INDIRECT_BUFFER).
     pub cmd_buffer: glow::Buffer,
+    /// CPU-visible pointer into the persistently-mapped command buffer.
+    cmd_ptr: *mut DrawElementsIndirectCommand,
+    /// Capacity of the mapped region in number of commands.
+    cmd_capacity: usize,
     /// Optional parameter buffer for MultiCount strategy (GL_PARAMETER_BUFFER).
     /// Stores the draw count as a u32 that the GPU reads.
     pub count_buffer: Option<glow::Buffer>,
 }
+
+// SAFETY: The mapped pointer is valid for the lifetime of the GL buffer and is
+// only accessed from the render thread.
+unsafe impl Send for IndirectBuffer {}
 
 impl IndirectBuffer {
     pub fn new(gl: Arc<glow::Context>, support_multi_count: bool) -> Self {
@@ -89,6 +109,24 @@ impl IndirectBuffer {
             let cmd_buffer = gl
                 .create_buffer()
                 .expect("Failed to create indirect command buffer");
+
+            // Allocate immutable storage with persistent + coherent mapping
+            let byte_size = MAX_INDIRECT_COMMANDS * std::mem::size_of::<DrawElementsIndirectCommand>();
+            let flags = glow::MAP_WRITE_BIT | glow::MAP_PERSISTENT_BIT | glow::MAP_COHERENT_BIT;
+
+            gl.bind_buffer(glow::DRAW_INDIRECT_BUFFER, Some(cmd_buffer));
+            gl.buffer_storage(glow::DRAW_INDIRECT_BUFFER, byte_size as i32, None, flags);
+
+            let cmd_ptr = gl.map_buffer_range(
+                glow::DRAW_INDIRECT_BUFFER,
+                0,
+                byte_size as i32,
+                flags,
+            ) as *mut DrawElementsIndirectCommand;
+
+            if cmd_ptr.is_null() {
+                panic!("Failed to map persistent indirect command buffer");
+            }
 
             let count_buffer = if support_multi_count {
                 let buf = gl
@@ -102,22 +140,28 @@ impl IndirectBuffer {
             Self {
                 gl,
                 cmd_buffer,
+                cmd_ptr,
+                cmd_capacity: MAX_INDIRECT_COMMANDS,
                 count_buffer,
             }
         }
     }
 
-    /// Upload draw commands to the GPU indirect buffer.
-    pub fn upload(&self, commands: &[DrawElementsIndirectCommand]) {
-        unsafe {
-            self.gl
-                .bind_buffer(glow::DRAW_INDIRECT_BUFFER, Some(self.cmd_buffer));
-            self.gl.buffer_data_u8_slice(
-                glow::DRAW_INDIRECT_BUFFER,
-                bytemuck::cast_slice(commands),
-                glow::STREAM_DRAW,
+    /// Write draw commands directly into the persistently-mapped buffer.
+    /// Returns the number of commands actually written (clamped to capacity).
+    pub fn upload(&self, commands: &[DrawElementsIndirectCommand]) -> usize {
+        let count = commands.len().min(self.cmd_capacity);
+        if count < commands.len() {
+            log::warn!(
+                "IndirectBuffer capacity exceeded: {} commands, capacity {}",
+                commands.len(),
+                self.cmd_capacity
             );
         }
+        unsafe {
+            std::ptr::copy_nonoverlapping(commands.as_ptr(), self.cmd_ptr, count);
+        }
+        count
     }
 
     /// Upload the command count to the parameter buffer (for MultiCount strategy).
@@ -154,6 +198,9 @@ impl IndirectBuffer {
         let cmd_stride = std::mem::size_of::<DrawElementsIndirectCommand>();
 
         unsafe {
+            // Ensure writes to the persistent mapping are visible to the GPU
+            self.gl
+                .memory_barrier(glow::COMMAND_BARRIER_BIT);
             self.gl
                 .bind_buffer(glow::DRAW_INDIRECT_BUFFER, Some(self.cmd_buffer));
 
@@ -215,6 +262,9 @@ impl IndirectBuffer {
 impl Drop for IndirectBuffer {
     fn drop(&mut self) {
         unsafe {
+            self.gl
+                .bind_buffer(glow::DRAW_INDIRECT_BUFFER, Some(self.cmd_buffer));
+            self.gl.unmap_buffer(glow::DRAW_INDIRECT_BUFFER);
             self.gl.delete_buffer(self.cmd_buffer);
             if let Some(buf) = self.count_buffer {
                 self.gl.delete_buffer(buf);

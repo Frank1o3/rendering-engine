@@ -21,6 +21,7 @@ use rendering_engine::render::renderer::{MeshId, Renderer};
 use rendering_engine::render::scene::{ObjectHandle, ObjectKind};
 use rendering_engine::resources::mesh::MeshData;
 
+use crate::meshes::create_wireframe_button_mesh;
 use crate::{
     meshes::{create_button_quad_mesh, create_quad_mesh, create_vsync_button_mesh},
     shaders::SHADERS,
@@ -42,7 +43,7 @@ struct ChunkEntry {
     invisible_frames: u32,
 }
 
-const MAX_CHUNK_GPU_UPLOADS_PER_FRAME: usize = 5;
+const MAX_CHUNK_GPU_UPLOADS_PER_FRAME: usize = 3;
 const MAX_CHUNK_GPU_EVICTIONS_PER_FRAME: usize = 3;
 const INVISIBLE_GRACE_FRAMES: u32 = 5;
 
@@ -83,7 +84,7 @@ pub fn start_render_thread(
         let quad_mesh = renderer.load_mesh(create_quad_mesh());
         let button_quad_mesh = renderer.load_mesh(create_button_quad_mesh());
         let vsync_button_mesh = renderer.load_mesh(create_vsync_button_mesh());
-        let wireframe_button_mesh = renderer.load_mesh(create_vsync_button_mesh());
+        let wireframe_button_mesh = renderer.load_mesh(create_wireframe_button_mesh());
 
         let shader_map = renderer
             .load_shaders_from_include_dir(&SHADERS)
@@ -181,6 +182,12 @@ pub fn start_render_thread(
                                             entry.gpu = Some((mesh_id, obj));
                                             entry.invisible_frames = 0;
                                             upload_budget -= 1;
+                                        } else {
+                                            log::warn!(
+                                                "GeometryPool exhausted: failed to upload chunk {:?} \
+                                                 (will retry next scan cycle)",
+                                                pos
+                                            );
                                         }
                                     }
                                 } else if visible {
