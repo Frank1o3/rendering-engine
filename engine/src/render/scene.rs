@@ -44,6 +44,9 @@ pub struct SortedInstance {
 pub struct Scene {
     objects: HashMap<ObjectHandle, SceneObject>,
     next_handle: u32,
+    cell_size: f32,
+    grid: HashMap<(i32, i32, i32), Vec<ObjectHandle>>,
+    grid_dirty: bool,
 
     /// True when the *set* of objects changed (added/removed) — the only
     /// thing that invalidates `cached_order`. Moving an object does NOT
@@ -66,6 +69,9 @@ impl Scene {
         Self {
             objects: HashMap::with_capacity(1024),
             next_handle: 0,
+            cell_size: 32.0,
+            grid: HashMap::new(),
+            grid_dirty: false,
             order_dirty: false,
             dynamic_handles: HashSet::new(),
             moved_static: HashSet::new(),
@@ -107,6 +113,7 @@ impl Scene {
         if self.objects.remove(&handle).is_some() {
             self.dynamic_handles.remove(&handle);
             self.moved_static.remove(&handle);
+            self.grid_dirty = true;
             self.order_dirty = true;
         }
     }
@@ -114,10 +121,28 @@ impl Scene {
     fn mark_moved(&mut self, handle: ObjectHandle) {
         if let Some(obj) = self.objects.get_mut(&handle) {
             obj.dirty = true;
+            self.grid_dirty = true;
             if obj.kind != ObjectKind::Dynamic {
                 self.moved_static.insert(handle);
             }
         }
+    }
+
+    fn cell_for(position: Vec3, cell_size: f32) -> (i32, i32, i32) {
+        (
+            (position.x / cell_size).floor() as i32,
+            (position.y / cell_size).floor() as i32,
+            (position.z / cell_size).floor() as i32,
+        )
+    }
+
+    fn rebuild_grid(&mut self) {
+        self.grid.clear();
+        for (&handle, obj) in &self.objects {
+            let cell = Self::cell_for(obj.position, self.cell_size);
+            self.grid.entry(cell).or_default().push(handle);
+        }
+        self.grid_dirty = false;
     }
 
     pub fn set_transform(
@@ -203,6 +228,46 @@ impl Scene {
         }
     }
 
+    pub fn collect_nearby_sorted_into(
+        &mut self,
+        out: &mut Vec<SortedInstance>,
+        camera_position: Vec3,
+        radius_cells: i32,
+    ) {
+        if self.grid_dirty {
+            self.rebuild_grid();
+        }
+
+        let origin = Self::cell_for(camera_position, self.cell_size);
+        let mut seen = HashSet::new();
+        out.clear();
+
+        for x in -radius_cells..=radius_cells {
+            for y in -radius_cells..=radius_cells {
+                for z in -radius_cells..=radius_cells {
+                    let key = (origin.0 + x, origin.1 + y, origin.2 + z);
+                    let Some(handles) = self.grid.get(&key) else {
+                        continue;
+                    };
+
+                    for &handle in handles {
+                        if !seen.insert(handle) {
+                            continue;
+                        }
+
+                        if let Some(obj) = self.objects.get(&handle) {
+                            out.push(SortedInstance {
+                                material_id: obj.material_id,
+                                mesh_id: obj.mesh_id,
+                                instance: obj.cached,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.objects.len()
     }
@@ -213,6 +278,66 @@ impl Scene {
 
     pub fn is_scene_dirty(&self) -> bool {
         self.order_dirty
+    }
+
+    /// Query the number of objects in a spatial region (in cells) around a position.
+    /// Useful for deciding whether to use full or partial visibility.
+    pub fn count_nearby_objects(&mut self, camera_position: Vec3, radius_cells: i32) -> usize {
+        if self.grid_dirty {
+            self.rebuild_grid();
+        }
+
+        let origin = Self::cell_for(camera_position, self.cell_size);
+        let mut count = 0;
+        let mut seen = HashSet::new();
+
+        for x in -radius_cells..=radius_cells {
+            for y in -radius_cells..=radius_cells {
+                for z in -radius_cells..=radius_cells {
+                    let key = (origin.0 + x, origin.1 + y, origin.2 + z);
+                    if let Some(handles) = self.grid.get(&key) {
+                        for &handle in handles {
+                            if seen.insert(handle) {
+                                count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        count
+    }
+
+    /// Get the cell size used for spatial partitioning.
+    pub fn get_cell_size(&self) -> f32 {
+        self.cell_size
+    }
+
+    /// Set the cell size for spatial partitioning. Larger values are faster but
+    /// less precise; smaller values are more precise but require more grid cells.
+    pub fn set_cell_size(&mut self, cell_size: f32) {
+        if (cell_size - self.cell_size).abs() > 0.01 {
+            self.cell_size = cell_size.max(1.0);
+            self.grid_dirty = true;
+        }
+    }
+
+    /// Suggest an appropriate visibility radius based on object count and spatial distribution.
+    /// Returns a recommended number of cells to include around the camera.
+    pub fn suggest_visibility_radius(&mut self, camera_position: Vec3, max_objects: usize) -> i32 {
+        // Start with a conservative estimate
+        let mut radius = 1i32;
+
+        // Grow radius until we've seen about 80% of max_objects or reach a reasonable max
+        while radius < 32 {
+            let count = self.count_nearby_objects(camera_position, radius);
+            if count as usize >= (max_objects * 8) / 10 {
+                break;
+            }
+            radius += 1;
+        }
+
+        radius
     }
 }
 

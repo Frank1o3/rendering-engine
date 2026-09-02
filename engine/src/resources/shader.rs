@@ -174,6 +174,12 @@ pub struct ShaderManager {
     next_id: u32,
 }
 
+impl Default for ShaderManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ShaderManager {
     pub fn new() -> Self {
         Self {
@@ -330,5 +336,17 @@ impl ShaderManager {
 
     pub fn get(&self, id: ShaderId) -> Option<&ShaderProgram> {
         self.shaders.get(&id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shader_manager_default_is_empty() {
+        let manager = ShaderManager::default();
+        assert!(manager.shaders.is_empty());
+        assert_eq!(manager.next_id, 0);
     }
 }

@@ -3,6 +3,8 @@ use crate::core::math::{self, sphere_inside_frustum};
 use crate::core::triple_buffer::ReadHandle;
 use crate::render::draw_indirect::{DrawElementsIndirectCommand, IndirectBuffer, MdiStrategy};
 use crate::render::frame_data::{FrameData, InstanceData};
+use crate::render::frame_scratch::FrameScratchBuffers;
+use crate::render::pass::{PassConfig, PassGroup, PassType};
 use crate::render::pipeline::{PipelineCache, PipelineState, PipelineStateId};
 use crate::render::scene::{ObjectHandle, ObjectKind, Scene, SortedInstance};
 use crate::render::skybox::SkyboxPipeline;
@@ -19,8 +21,27 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-const MAX_OBJECTS: usize = 65536;
-const TRANSFORM_REGIONS: usize = 3;
+const DEFAULT_MAX_OBJECTS: usize = 65536;
+const DEFAULT_TRANSFORM_REGIONS: usize = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RendererConfig {
+    pub max_objects: usize,
+    pub transform_regions: usize,
+    pub indirect_command_capacity: usize,
+    pub initial_draw_batch_capacity: usize,
+}
+
+impl Default for RendererConfig {
+    fn default() -> Self {
+        Self {
+            max_objects: DEFAULT_MAX_OBJECTS,
+            transform_regions: DEFAULT_TRANSFORM_REGIONS,
+            indirect_command_capacity: 4096,
+            initial_draw_batch_capacity: 1024,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Pod, Zeroable)]
 #[repr(transparent)]
@@ -34,11 +55,10 @@ pub struct Renderer {
     pub textures: TextureManager,
     pub skybox: Option<SkyboxPipeline>,
     meshes: HashMap<MeshId, Mesh>,
-    sorted_instances: Vec<SortedInstance>,
-    indirect_cmds: Vec<DrawElementsIndirectCommand>,
     next_mesh_id: u32,
     transform_buffer: PersistentMappedBuffer,
     geometry_pool: GeometryPool,
+    max_objects: usize,
     width: i32,
     height: i32,
 
@@ -52,15 +72,27 @@ pub struct Renderer {
     last_frame: FrameData,
     has_frame: bool,
 
-    region_fences: [Option<glow::Fence>; TRANSFORM_REGIONS],
+    region_fences: Vec<Option<glow::Fence>>,
     frame_index: u64,
-    pending_draws: Vec<(PipelineStateId, DrawElementsIndirectCommand)>,
     last_frustum: Option<[Vec4; 6]>,
+
+    /// Reusable scratch buffers for frame rendering to avoid per-frame allocations.
+    frame_scratch: FrameScratchBuffers,
 }
 
 impl Renderer {
     pub fn new(gl: glow::Context, read_handle: ReadHandle<FrameData>) -> Self {
+        Self::with_config(gl, read_handle, RendererConfig::default())
+    }
+
+    pub fn with_config(
+        gl: glow::Context,
+        read_handle: ReadHandle<FrameData>,
+        config: RendererConfig,
+    ) -> Self {
         let gl = Arc::new(gl);
+        let max_objects = config.max_objects.max(1);
+        let transform_regions = config.transform_regions.max(1);
 
         unsafe {
             gl.enable(glow::DEPTH_TEST);
@@ -71,7 +103,7 @@ impl Renderer {
 
         let transform_buffer = PersistentMappedBuffer::new(
             gl.clone(),
-            MAX_OBJECTS * TRANSFORM_REGIONS * std::mem::size_of::<InstanceData>(),
+            max_objects * transform_regions * std::mem::size_of::<InstanceData>(),
         );
 
         let geometry_pool = GeometryPool::new(gl.clone(), transform_buffer.handle);
@@ -85,10 +117,9 @@ impl Renderer {
             textures: TextureManager::new(),
             skybox: None,
             meshes: HashMap::new(),
-            sorted_instances: Vec::with_capacity(MAX_OBJECTS),
-            indirect_cmds: Vec::with_capacity(1024),
             transform_buffer,
             geometry_pool,
+            max_objects,
             next_mesh_id: 0,
             width: 1280,
             height: 720,
@@ -99,10 +130,10 @@ impl Renderer {
             current_pipeline_id: None,
             last_frame: FrameData::default(),
             has_frame: false,
-            region_fences: [None; TRANSFORM_REGIONS],
+            region_fences: vec![None; transform_regions],
             frame_index: 0,
-            pending_draws: Vec::with_capacity(1024),
             last_frustum: None,
+            frame_scratch: FrameScratchBuffers::new(max_objects),
         }
     }
 
@@ -286,6 +317,45 @@ impl Renderer {
         }
     }
 
+    pub fn default_pass_order() -> Vec<PassGroup> {
+        let mut passes = vec![
+            PassGroup {
+                pass_type: PassType::Skybox,
+                index: 0,
+            },
+            PassGroup {
+                pass_type: PassType::Opaque,
+                index: 1,
+            },
+            PassGroup {
+                pass_type: PassType::UI,
+                index: 2,
+            },
+        ];
+        passes.sort();
+        passes
+    }
+
+    pub fn apply_pass_config(&self, pass: &PassConfig) {
+        let viewport = pass.viewport.unwrap_or((0, 0, self.width, self.height));
+        unsafe {
+            self.gl
+                .viewport(viewport.0, viewport.1, viewport.2, viewport.3);
+        }
+
+        if let Some(color) = pass.clear_color {
+            unsafe {
+                self.gl.clear_color(color.x, color.y, color.z, color.w);
+            }
+        }
+
+        if pass.clear_flags.color || pass.clear_flags.depth || pass.clear_flags.stencil {
+            unsafe {
+                self.gl.clear(pass.clear_flags.to_gl_bits());
+            }
+        }
+    }
+
     // ── Transform-region synchronization ────────────────────────────────────
 
     fn wait_for_region(&mut self, region: usize) {
@@ -348,14 +418,14 @@ impl Renderer {
             return;
         }
 
-        let region = (self.frame_index % TRANSFORM_REGIONS as u64) as usize;
+        let region = (self.frame_index % self.region_fences.len() as u64) as usize;
         self.wait_for_region(region);
-        let region_base = region * MAX_OBJECTS;
-        let region_limit = region_base + MAX_OBJECTS;
+        let region_base = region * self.max_objects;
+        let region_limit = region_base + self.max_objects;
 
         self.current_pipeline_id = None;
+        self.frame_scratch.clear();
 
-        // ── PASS 0: Skybox ────────────────────────────────────────────────────
         let view = math::camera_to_view_matrix(
             self.last_frame.camera_position,
             self.last_frame.camera_rotation,
@@ -369,57 +439,84 @@ impl Renderer {
         let vp = proj * view;
         let inv_vp = vp.inverse();
 
-        if let Some(skybox) = &self.skybox {
-            skybox.draw(&self.shaders, &inv_vp);
-        }
+        self.apply_pass_config(&PassConfig::new(PassType::Skybox));
+        self.render_skybox_pass(&inv_vp);
 
-        // ── PASS 1: 3D scene ──────────────────────────────────────────────────
         let frustum = math::extract_frustum_planes(vp);
         self.last_frustum = Some(frustum);
 
+        self.apply_pass_config(&PassConfig::new(PassType::Opaque));
+        let mut transform_offset = region_base;
+        transform_offset = self.render_world_pass(&vp, &frustum, transform_offset, region_limit);
+
+        self.apply_pass_config(&PassConfig::new(PassType::UI));
+        self.render_ui_pass(transform_offset, region_limit);
+
+        self.fence_region(region);
+        self.frame_index = self.frame_index.wrapping_add(1);
+    }
+
+    fn render_skybox_pass(&mut self, inv_vp: &glam::Mat4) {
+        if let Some(skybox) = &self.skybox {
+            skybox.draw(&self.shaders, inv_vp);
+        }
+    }
+
+    fn render_world_pass(
+        &mut self,
+        vp: &glam::Mat4,
+        frustum: &[Vec4; 6],
+        transform_offset: usize,
+        region_limit: usize,
+    ) -> usize {
         self.scene.flush_dirty();
-        self.scene.collect_sorted_into(&mut self.sorted_instances);
+        self.frame_scratch.sorted_instances.clear();
+        self.scene.collect_nearby_sorted_into(
+            &mut self.frame_scratch.sorted_instances,
+            self.last_frame.camera_position,
+            16,
+        );
 
         let dynamic_commands_exist = !self.last_frame.commands.is_empty();
         for cmd in &self.last_frame.commands {
-            self.sorted_instances.push(SortedInstance {
+            self.frame_scratch.sorted_instances.push(SortedInstance {
                 material_id: cmd.material_id,
                 mesh_id: cmd.mesh_id,
                 instance: cmd.to_instance_data(),
             });
         }
         if dynamic_commands_exist {
-            self.sorted_instances
+            self.frame_scratch
+                .sorted_instances
                 .sort_unstable_by_key(|o| (o.material_id, o.mesh_id));
         }
 
-        let mut transform_offset = region_base;
-        transform_offset =
-            self.render_instances(&vp, transform_offset, region_limit, Some(&frustum));
+        self.render_instances(vp, transform_offset, region_limit, Some(frustum))
+    }
 
-        // ── PASS 2: UI overlay ────────────────────────────────────────────────
-        if !self.last_frame.ui_commands.is_empty() {
-            let w = self.width as f32;
-            let h = self.height as f32;
-            let ui_proj = glam::Mat4::from_translation(glam::Vec3::new(-1.0, 1.0, 0.0))
-                * glam::Mat4::from_scale(glam::Vec3::new(2.0 / w, -2.0 / h, 1.0));
-
-            self.sorted_instances.clear();
-            for cmd in &self.last_frame.ui_commands {
-                self.sorted_instances.push(SortedInstance {
-                    material_id: cmd.material_id,
-                    mesh_id: cmd.mesh_id,
-                    instance: cmd.to_instance_data(),
-                });
-            }
-            self.sorted_instances
-                .sort_unstable_by_key(|o| (o.material_id, o.mesh_id));
-
-            self.render_instances(&ui_proj, transform_offset, region_limit, None);
+    fn render_ui_pass(&mut self, transform_offset: usize, region_limit: usize) {
+        if self.last_frame.ui_commands.is_empty() {
+            return;
         }
 
-        self.fence_region(region);
-        self.frame_index = self.frame_index.wrapping_add(1);
+        let w = self.width as f32;
+        let h = self.height as f32;
+        let ui_proj = glam::Mat4::from_translation(glam::Vec3::new(-1.0, 1.0, 0.0))
+            * glam::Mat4::from_scale(glam::Vec3::new(2.0 / w, -2.0 / h, 1.0));
+
+        self.frame_scratch.sorted_instances.clear();
+        for cmd in &self.last_frame.ui_commands {
+            self.frame_scratch.sorted_instances.push(SortedInstance {
+                material_id: cmd.material_id,
+                mesh_id: cmd.mesh_id,
+                instance: cmd.to_instance_data(),
+            });
+        }
+        self.frame_scratch
+            .sorted_instances
+            .sort_unstable_by_key(|o| (o.material_id, o.mesh_id));
+
+        self.render_instances(&ui_proj, transform_offset, region_limit, None);
     }
 
     fn render_instances(
@@ -429,22 +526,25 @@ impl Renderer {
         region_limit: usize,
         frustum: Option<&[Vec4; 6]>,
     ) -> usize {
-        if self.sorted_instances.is_empty() {
+        if self.frame_scratch.sorted_instances.is_empty() {
             return transform_offset;
         }
 
         let start_offset = transform_offset;
-        let total = self.sorted_instances.len();
+        let total = self.frame_scratch.sorted_instances.len();
 
-        let mut visible_indices: Vec<usize> = Vec::with_capacity(total);
+        self.frame_scratch.visible_indices.clear();
+        self.frame_scratch
+            .visible_indices
+            .reserve(total.min(self.max_objects));
 
         for i in 0..total {
             if transform_offset >= region_limit {
-                log::warn!("Max transform capacity ({}) exceeded", MAX_OBJECTS);
+                log::warn!("Max transform capacity ({}) exceeded", self.max_objects);
                 break;
             }
 
-            let inst = &self.sorted_instances[i];
+            let inst = &self.frame_scratch.sorted_instances[i];
 
             if let Some(planes) = frustum {
                 let mesh = self.meshes.get(&inst.mesh_id).expect("Mesh ID not found");
@@ -458,7 +558,7 @@ impl Renderer {
 
             self.transform_buffer
                 .write_instance(transform_offset, &inst.instance);
-            visible_indices.push(i);
+            self.frame_scratch.visible_indices.push(i);
             transform_offset += 1;
         }
 
@@ -472,18 +572,18 @@ impl Renderer {
                 .memory_barrier(glow::CLIENT_MAPPED_BUFFER_BARRIER_BIT);
         }
 
-        self.pending_draws.clear();
+        self.frame_scratch.pending_draws.clear();
 
         let mut vi = 0;
         while vi < actual {
-            let first_si = visible_indices[vi];
-            let mat_id = self.sorted_instances[first_si].material_id;
-            let mesh_id = self.sorted_instances[first_si].mesh_id;
+            let first_si = self.frame_scratch.visible_indices[vi];
+            let mat_id = self.frame_scratch.sorted_instances[first_si].material_id;
+            let mesh_id = self.frame_scratch.sorted_instances[first_si].mesh_id;
 
             let mut group_end = vi + 1;
             while group_end < actual {
-                let si = visible_indices[group_end];
-                let inst = &self.sorted_instances[si];
+                let si = self.frame_scratch.visible_indices[group_end];
+                let inst = &self.frame_scratch.sorted_instances[si];
                 if inst.material_id != mat_id || inst.mesh_id != mesh_id {
                     break;
                 }
@@ -507,11 +607,14 @@ impl Renderer {
                 base_instance,
             };
 
-            self.pending_draws.push((material_entry.pipeline_id, cmd));
+            self.frame_scratch
+                .pending_draws
+                .push((material_entry.pipeline_id, cmd));
             vi = group_end;
         }
 
-        self.pending_draws
+        self.frame_scratch
+            .pending_draws
             .sort_by_key(|(pipeline_id, _)| pipeline_id.0);
 
         unsafe {
@@ -519,11 +622,12 @@ impl Renderer {
         }
 
         let mut pi = 0;
-        while pi < self.pending_draws.len() {
-            let pipeline_id = self.pending_draws[pi].0;
+        while pi < self.frame_scratch.pending_draws.len() {
+            let pipeline_id = self.frame_scratch.pending_draws[pi].0;
 
             let mut run_end = pi + 1;
-            while run_end < self.pending_draws.len() && self.pending_draws[run_end].0 == pipeline_id
+            while run_end < self.frame_scratch.pending_draws.len()
+                && self.frame_scratch.pending_draws[run_end].0 == pipeline_id
             {
                 run_end += 1;
             }
@@ -540,10 +644,15 @@ impl Renderer {
                 .expect("Shader ID not found");
             shader.set_vp(vp);
 
-            self.indirect_cmds.clear();
-            self.indirect_cmds
-                .extend(self.pending_draws[pi..run_end].iter().map(|(_, cmd)| *cmd));
-            let cmd_count = self.indirect_buffer.upload(&self.indirect_cmds);
+            self.frame_scratch.indirect_cmds.clear();
+            self.frame_scratch.indirect_cmds.extend(
+                self.frame_scratch.pending_draws[pi..run_end]
+                    .iter()
+                    .map(|(_, cmd)| *cmd),
+            );
+            let cmd_count = self
+                .indirect_buffer
+                .upload(&self.frame_scratch.indirect_cmds);
             if self.mdi_strategy == MdiStrategy::MultiCount {
                 self.indirect_buffer.upload_count(cmd_count as u32);
             }
