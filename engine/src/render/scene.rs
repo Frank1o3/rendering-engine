@@ -239,7 +239,6 @@ impl Scene {
         }
 
         let origin = Self::cell_for(camera_position, self.cell_size);
-        let mut seen = HashSet::new();
         out.clear();
 
         for x in -radius_cells..=radius_cells {
@@ -251,10 +250,6 @@ impl Scene {
                     };
 
                     for &handle in handles {
-                        if !seen.insert(handle) {
-                            continue;
-                        }
-
                         if let Some(obj) = self.objects.get(&handle) {
                             out.push(SortedInstance {
                                 material_id: obj.material_id,
@@ -266,6 +261,11 @@ impl Scene {
                 }
             }
         }
+
+        // Each object belongs to exactly one grid cell, so a per-frame
+        // HashSet is unnecessary. Sort once here to keep equal mesh/material
+        // draws contiguous for the renderer's batching pass.
+        out.sort_unstable_by_key(|instance| (instance.material_id, instance.mesh_id));
     }
 
     pub fn len(&self) -> usize {

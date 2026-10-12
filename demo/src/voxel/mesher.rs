@@ -86,7 +86,10 @@ fn axis_extent(axis: (i32, i32, i32), min_y: i32, max_y: i32) -> (usize, i32) {
     }
 }
 
-pub fn mesh_chunk(chunk: &Chunk, neighbor_solid: impl Fn(i32, i32, i32) -> bool) -> MeshData {
+pub fn mesh_chunk(
+    chunk: &Chunk,
+    mut neighbor_solid: impl FnMut(i32, i32, i32) -> bool,
+) -> MeshData {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
 
@@ -94,7 +97,7 @@ pub fn mesh_chunk(chunk: &Chunk, neighbor_solid: impl Fn(i32, i32, i32) -> bool)
         return MeshData { vertices, indices };
     };
 
-    let is_solid = |x: i32, y: i32, z: i32| -> bool {
+    let mut is_solid = |x: i32, y: i32, z: i32| -> bool {
         match chunk.get_checked(x, y, z) {
             Some(b) => b.is_solid(),
             None => neighbor_solid(x, y, z),

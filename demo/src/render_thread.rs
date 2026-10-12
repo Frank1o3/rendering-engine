@@ -15,11 +15,11 @@ use glutin::{
 };
 
 use rendering_engine::core::triple_buffer::ReadHandle;
-use rendering_engine::render::{BlendFactor, CullMode, DepthFunc};
 use rendering_engine::render::frame_data::FrameData;
 use rendering_engine::render::pipeline::PipelineState;
 use rendering_engine::render::renderer::{MeshId, Renderer};
 use rendering_engine::render::scene::{ObjectHandle, ObjectKind};
+use rendering_engine::render::{BlendFactor, CullMode, DepthFunc};
 use rendering_engine::resources::mesh::MeshData;
 
 use crate::meshes::create_wireframe_button_mesh;
@@ -54,6 +54,7 @@ pub fn start_render_thread(
     read_handle: ReadHandle<FrameData>,
     vsync_enabled: Arc<AtomicBool>,
     frame_counter: Arc<AtomicU64>,
+    render_pending: Arc<AtomicBool>,
     wireframe_enabled: Arc<AtomicBool>,
 ) -> (
     SyncSender<RenderCommand>,
@@ -157,6 +158,10 @@ pub fn start_render_thread(
         loop {
             match cmd_rx.recv() {
                 Ok(RenderCommand::Render) => {
+                    // Release the queued-request slot as soon as this frame is
+                    // dequeued. The game thread can then queue at most one
+                    // newer frame while this one is being rendered.
+                    render_pending.store(false, Ordering::Release);
                     renderer.render();
 
                     scan_counter = scan_counter.wrapping_add(1);

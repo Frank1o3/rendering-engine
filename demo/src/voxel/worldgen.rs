@@ -76,31 +76,6 @@ impl NoiseGenerators {
         )
         .clamp(1, 250)
     }
-
-    /// Single-block lookup used for chunk-boundary face culling. Mirrors
-    /// the column logic in `generate_chunk_with` exactly, so a chunk's
-    /// own blocks and a neighbor-probed block never disagree at the seam.
-    pub fn block_at(&self, world_x: i32, world_y: i32, world_z: i32) -> BlockId {
-        if world_y < 0 {
-            return BlockId::AIR; // nothing below the generated floor
-        }
-
-        let surface = self.height_at(world_x, world_z);
-
-        if world_y >= surface {
-            BlockId::AIR
-        } else if world_y == surface - 1 {
-            if surface <= SEA_LEVEL {
-                BlockId::DIRT
-            } else {
-                BlockId::GRASS
-            }
-        } else if world_y >= surface - 4 {
-            BlockId::DIRT
-        } else {
-            BlockId::STONE
-        }
-    }
 }
 
 impl Default for NoiseGenerators {

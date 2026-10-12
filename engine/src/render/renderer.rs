@@ -93,6 +93,7 @@ impl Renderer {
         let gl = Arc::new(gl);
         let max_objects = config.max_objects.max(1);
         let transform_regions = config.transform_regions.max(1);
+        let draw_capacity = config.initial_draw_batch_capacity.max(1);
 
         unsafe {
             gl.enable(glow::DEPTH_TEST);
@@ -107,7 +108,8 @@ impl Renderer {
         );
 
         let geometry_pool = GeometryPool::new(gl.clone(), transform_buffer.handle);
-        let indirect_buffer = IndirectBuffer::new(gl.clone(), true);
+        let indirect_buffer =
+            IndirectBuffer::with_capacity(gl.clone(), true, config.indirect_command_capacity);
 
         Self {
             gl,
@@ -133,7 +135,7 @@ impl Renderer {
             region_fences: vec![None; transform_regions],
             frame_index: 0,
             last_frustum: None,
-            frame_scratch: FrameScratchBuffers::new(max_objects),
+            frame_scratch: FrameScratchBuffers::with_capacities(max_objects, draw_capacity),
         }
     }
 

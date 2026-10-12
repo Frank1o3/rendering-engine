@@ -94,7 +94,9 @@ impl ApplicationHandler for App {
         // TIME STEP
         //
         let now = Instant::now();
-        let dt = (now - state.last_frame).as_secs_f32();
+        // Avoid a large movement jump after a debugger pause, window drag, or
+        // temporary system stall.
+        let dt = (now - state.last_frame).as_secs_f32().min(0.1);
         state.last_frame = now;
 
         // app.rs — replace the tick-based counter with the atomic-based one

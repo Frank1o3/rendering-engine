@@ -28,11 +28,16 @@ pub struct FrameScratchBuffers {
 impl FrameScratchBuffers {
     /// Create scratch buffers with conservative pre-allocation.
     pub fn new(capacity: usize) -> Self {
+        Self::with_capacities(capacity, capacity / 4)
+    }
+
+    /// Create scratch storage with separate instance and expected draw counts.
+    pub fn with_capacities(instance_capacity: usize, draw_capacity: usize) -> Self {
         Self {
-            sorted_instances: Vec::with_capacity(capacity),
-            visible_indices: Vec::with_capacity(capacity),
-            indirect_cmds: Vec::with_capacity(capacity / 4),
-            pending_draws: Vec::with_capacity(capacity / 4),
+            sorted_instances: Vec::with_capacity(instance_capacity),
+            visible_indices: Vec::with_capacity(instance_capacity),
+            indirect_cmds: Vec::with_capacity(draw_capacity),
+            pending_draws: Vec::with_capacity(draw_capacity),
         }
     }
 

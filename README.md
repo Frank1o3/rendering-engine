@@ -11,8 +11,9 @@ The goal of this project is to build a lightweight, modular, and flexible render
 - **Modular Architecture (`core`, `resources`, `render`)**
   - Clean separation between low-level memory/buffers, graphics resources, and rendering pipelines.
 
-- **Multi-Draw Indirect (MDI) & GPU Batching**
-  - Groups draw calls together to reduce CPU overhead.
+- **Indirect Draw Batching**
+  - Groups instances by material and mesh and submits indirect draw commands.
+  - The current `glow` path dispatches those commands with a GL-call loop; the buffer layout is ready for native MDI when the backend exposes it.
   - Uses GPU-side instance data handling to avoid unnecessary CPU-to-GPU synchronization.
 
 - **Textures, Atlases & Texture Arrays**
@@ -82,6 +83,20 @@ cargo run --bin desktop
 - **W / A / S / D**: Move camera forward / left / backward / right.
 - **Mouse / Drag**: Look around (yaw & pitch).
 - **Space / Left Ctrl**: Fly up / down.
+- **E**: Toggle vertical sync.
+- **G**: Toggle terrain wireframe.
+- **Escape**: Release or recapture the mouse cursor.
+- On Android, use the on-screen movement controls and touch-drag to look around.
+
+### What the Demo Exercises
+
+The voxel terrain demo combines procedural terrain generation and greedy
+chunk meshing on worker threads with frustum-prioritized chunk loading,
+GPU-side chunk upload/eviction, instanced scene rendering, directional
+lighting, a procedural skybox, and an on-screen frame-rate display. The
+wireframe and vertical-sync toggles let you inspect geometry and presentation
+timing. Desktop tuning values, including render distance, are stored in
+`config.json` beside the executable after the first run.
 
 ---
 

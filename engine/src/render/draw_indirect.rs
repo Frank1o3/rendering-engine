@@ -105,24 +105,31 @@ unsafe impl Send for IndirectBuffer {}
 
 impl IndirectBuffer {
     pub fn new(gl: Arc<glow::Context>, support_multi_count: bool) -> Self {
+        Self::with_capacity(gl, support_multi_count, MAX_INDIRECT_COMMANDS)
+    }
+
+    /// Create an indirect command buffer sized for the expected draw count.
+    pub fn with_capacity(
+        gl: Arc<glow::Context>,
+        support_multi_count: bool,
+        capacity: usize,
+    ) -> Self {
+        let capacity = capacity.max(1);
         unsafe {
             let cmd_buffer = gl
                 .create_buffer()
                 .expect("Failed to create indirect command buffer");
 
             // Allocate immutable storage with persistent + coherent mapping
-            let byte_size = MAX_INDIRECT_COMMANDS * std::mem::size_of::<DrawElementsIndirectCommand>();
+            let byte_size = capacity * std::mem::size_of::<DrawElementsIndirectCommand>();
             let flags = glow::MAP_WRITE_BIT | glow::MAP_PERSISTENT_BIT | glow::MAP_COHERENT_BIT;
 
             gl.bind_buffer(glow::DRAW_INDIRECT_BUFFER, Some(cmd_buffer));
             gl.buffer_storage(glow::DRAW_INDIRECT_BUFFER, byte_size as i32, None, flags);
 
-            let cmd_ptr = gl.map_buffer_range(
-                glow::DRAW_INDIRECT_BUFFER,
-                0,
-                byte_size as i32,
-                flags,
-            ) as *mut DrawElementsIndirectCommand;
+            let cmd_ptr =
+                gl.map_buffer_range(glow::DRAW_INDIRECT_BUFFER, 0, byte_size as i32, flags)
+                    as *mut DrawElementsIndirectCommand;
 
             if cmd_ptr.is_null() {
                 panic!("Failed to map persistent indirect command buffer");
@@ -141,7 +148,7 @@ impl IndirectBuffer {
                 gl,
                 cmd_buffer,
                 cmd_ptr,
-                cmd_capacity: MAX_INDIRECT_COMMANDS,
+                cmd_capacity: capacity,
                 count_buffer,
             }
         }
@@ -199,8 +206,7 @@ impl IndirectBuffer {
 
         unsafe {
             // Ensure writes to the persistent mapping are visible to the GPU
-            self.gl
-                .memory_barrier(glow::COMMAND_BARRIER_BIT);
+            self.gl.memory_barrier(glow::COMMAND_BARRIER_BIT);
             self.gl
                 .bind_buffer(glow::DRAW_INDIRECT_BUFFER, Some(self.cmd_buffer));
 

@@ -83,9 +83,23 @@ impl World {
 
                     let chunk = generate_chunk_with(pos, &gens);
                     let (origin_x, _, origin_z) = chunk.world_origin();
+                    // Meshing probes the neighboring column once per boundary
+                    // voxel. Terrain height is constant for all of those Y
+                    // probes, so cache it per X/Z column instead of rerunning
+                    // four fractal-noise samples for every voxel.
+                    let mut edge_heights =
+                        HashMap::with_capacity((CHUNK_SIZE_X + CHUNK_SIZE_Z) * 4);
 
                     let mesh = mesh_chunk(&chunk, |x, y, z| {
-                        gens.block_at(origin_x + x, y, origin_z + z).is_solid()
+                        if y < 0 {
+                            return false;
+                        }
+                        let world_x = origin_x + x;
+                        let world_z = origin_z + z;
+                        let surface = *edge_heights
+                            .entry((world_x, world_z))
+                            .or_insert_with(|| gens.height_at(world_x, world_z));
+                        y < surface
                     });
 
                     if !mesh.indices.is_empty() {

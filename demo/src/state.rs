@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::SyncSender,
     },
     thread::JoinHandle,
@@ -68,6 +68,8 @@ pub struct DemoState {
     pub vsync_enabled: Arc<AtomicBool>,
     pub config: crate::config::Config,
     pub frame_counter: Arc<AtomicU64>,
+    /// Keeps at most one render request queued while the render thread is busy.
+    pub render_pending: Arc<AtomicBool>,
     pub last_frame_counter: u64,
     pub wireframe_enabled: Arc<AtomicBool>,
 }
@@ -85,9 +87,22 @@ impl DemoState {
 
     pub fn request_render(&mut self) {
         use std::sync::mpsc::TrySendError;
+        if self
+            .render_pending
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
         match self.render_tx.try_send(RenderCommand::Render) {
-            Ok(()) | Err(TrySendError::Full(_)) => {}
-            Err(TrySendError::Disconnected(_)) => log::error!("Render thread has disconnected"),
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                self.render_pending.store(false, Ordering::Release);
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                self.render_pending.store(false, Ordering::Release);
+                log::error!("Render thread has disconnected");
+            }
         }
     }
 

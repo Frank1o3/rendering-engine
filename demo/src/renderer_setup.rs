@@ -28,6 +28,7 @@ pub fn create_demo_state(event_loop: &ActiveEventLoop) -> DemoState {
     let vsync_enabled = Arc::new(AtomicBool::new(config.vsync_default));
     let template = ConfigTemplateBuilder::new();
     let frame_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let render_pending = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let window_attributes = Window::default_attributes()
         .with_title("Rendering Engine — OpenGL ES 3.2 3D Demo")
@@ -75,6 +76,7 @@ pub fn create_demo_state(event_loop: &ActiveEventLoop) -> DemoState {
         read_handle,
         vsync_enabled.clone(),
         frame_counter.clone(),
+        render_pending.clone(),
         wireframe_enabled.clone(),
     );
 
@@ -106,6 +108,7 @@ pub fn create_demo_state(event_loop: &ActiveEventLoop) -> DemoState {
         wireframe_enabled,
         config,
         frame_counter,
+        render_pending,
         last_frame_counter: 0,
     }
 }
