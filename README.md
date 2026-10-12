@@ -17,7 +17,7 @@ The goal of this project is to build a lightweight, modular, and flexible render
   - Uses GPU-side instance data handling to avoid unnecessary CPU-to-GPU synchronization.
 
 - **Textures, Atlases & Texture Arrays**
-  - 2D textures, 2D texture arrays (`GL_TEXTURE_2D_ARRAY`), and UV atlas helpers (`TextureAtlas`).
+  - 2D, cubemap, and array textures; sRGB and BC1/BC4/BC5 uploads; CPU RGBA8 atlas packing and UV helpers.
 
 - **Offscreen Framebuffers & Render Targets**
   - FBO abstractions (`Framebuffer`) with color attachments, depth textures, and depth renderbuffers.
@@ -28,11 +28,18 @@ The goal of this project is to build a lightweight, modular, and flexible render
 - **Fullscreen Skybox Pass**
   - Pre-pass skybox pipeline with `LEQUAL` depth testing and inverse view-projection uniform upload.
 
+- **Light Uniform Block**
+  - Renderer-managed std140 UBO for up to 16 directional, point, or spot lights.
+  - Shaders opt into the shared block layout; the demo uses it for diffuse lighting.
+
 - **Persistent Mapped Buffers**
   - Uses persistent mapped SSBOs with multiple fenced regions (`TRANSFORM_REGIONS`) to safely update GPU data while avoiding CPU/GPU conflicts.
 
-- **Dedicated Render Thread & Lock-Free Triple Buffering**
-  - Game logic and rendering are separated into different threads via a lock-free `TripleBuffer`.
+- **Dedicated Render Thread & Triple-Buffer Handoff**
+  - Game logic and rendering exchange the latest frame through clone-free slot swaps. The GL context and `Renderer` are created and used only on the render thread.
+
+- **Frame Diagnostics**
+  - Per-frame counts for submitted and culled instances, draw calls, pipeline changes, and estimated triangles.
 
 - **Desktop and Android Support**
   - Desktop support through `winit` / `glutin`.
@@ -48,8 +55,11 @@ rendering-engine/
 │   └── src/
 │       ├── lib.rs
 │       ├── core/           # Memory allocators, persistent buffers, math & triple buffer
-│       ├── resources/      # Meshes, geometry pool, shaders, textures, materials, compute
-│       └── render/         # Renderer facade, passes, MDI, framebuffers, skybox, scene graph
+│       ├── render/         # Rendering APIs, frame data, passes, scene graph
+│       │   └── renderer/   # Scene API, resources, passes, sync, world and draw submission
+│       ├── resources/      # GPU resources and resource managers
+│       │   ├── shader/     # Shader program and manager
+│       │   └── texture/    # Texture formats, atlas, and manager
 │
 ├── demo/                   # Example voxel 3D application
 │   └── src/

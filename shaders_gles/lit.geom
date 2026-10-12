@@ -6,9 +6,13 @@ layout(triangle_strip, max_vertices = 3) out;
 
 in vec4 vColor[];
 in vec3 vWorldNormal[];
+in vec3 vWorldPosition[];
+in vec2 vUV[];
 
 out vec4 fColor;
 out vec3 fWorldNormal;
+out vec3 fWorldPosition;
+out vec2 fUV;
 out vec3 gBary;
 
 void main() {
@@ -22,6 +26,8 @@ void main() {
         gl_Position   = gl_in[i].gl_Position;
         fColor        = vColor[i];
         fWorldNormal  = vWorldNormal[i];
+        fWorldPosition = vWorldPosition[i];
+        fUV           = vUV[i];
         gBary         = baryCoords[i];
         EmitVertex();
     }

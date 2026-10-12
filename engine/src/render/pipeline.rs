@@ -14,7 +14,7 @@ impl From<u64> for PipelineStateId {
 }
 
 /// Describes the complete OpenGL pipeline state for rendering
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PipelineState {
     pub shader_id: u32,
     pub cull_mode: CullMode,
@@ -139,36 +139,44 @@ impl PipelineState {
     }
 }
 
-/// Cache that maps pipeline state hashes to their IDs.
-/// The PipelineStateId is simply the hash of the state, ensuring O(1) lookups
-/// and automatically deduplicating identical states.
+/// Cache that deduplicates equal pipeline states and assigns opaque IDs.
 pub struct PipelineCache {
-    states: HashMap<u64, PipelineState>,
+    states: HashMap<PipelineStateId, PipelineState>,
+    ids_by_state: HashMap<PipelineState, PipelineStateId>,
+    next_id: u64,
 }
 
 impl PipelineCache {
     pub fn new() -> Self {
         Self {
             states: HashMap::new(),
+            ids_by_state: HashMap::new(),
+            next_id: 0,
         }
     }
 
     /// Registers a pipeline state and returns its ID.
     /// If an identical state already exists, returns the existing ID.
     pub fn register(&mut self, state: PipelineState) -> PipelineStateId {
-        let hash = state.hash();
-        self.states.entry(hash).or_insert(state);
-        PipelineStateId(hash) // The ID is just the full hash!
+        if let Some(id) = self.ids_by_state.get(&state) {
+            return *id;
+        }
+
+        let id = PipelineStateId(self.next_id);
+        self.next_id = self.next_id.wrapping_add(1);
+        self.states.insert(id, state);
+        self.ids_by_state.insert(state, id);
+        id
     }
 
-    /// Retrieves a pipeline state by its hash
-    pub fn get(&self, hash: u64) -> Option<&PipelineState> {
-        self.states.get(&hash)
+    /// Retrieves a pipeline state by its ID.
+    pub fn get(&self, id: u64) -> Option<&PipelineState> {
+        self.get_by_id(PipelineStateId(id))
     }
 
-    /// Retrieves a pipeline state by its ID
+    /// Retrieves a pipeline state by its ID.
     pub fn get_by_id(&self, id: PipelineStateId) -> Option<&PipelineState> {
-        self.states.get(&id.0) // Correctly looks up the full u64 hash
+        self.states.get(&id)
     }
 }
 

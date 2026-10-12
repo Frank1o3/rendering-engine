@@ -6,6 +6,10 @@ use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
 use std::f32::consts::PI;
 
+fn safe_direction(direction: Vec3) -> Vec3 {
+    direction.try_normalize().unwrap_or(Vec3::NEG_Y)
+}
+
 /// Maximum number of lights that can be active at once.
 /// This is limited by the uniform buffer size and performance considerations.
 pub const MAX_LIGHTS: usize = 16;
@@ -25,8 +29,8 @@ pub enum LightType {
     Spot = 2,
 }
 
-/// Light data as it appears in the uniform buffer.
-/// Packed to 64 bytes (16 floats) for efficient GPU transfer.
+/// Light data as it appears in the engine light uniform block.
+/// Each group occupies one std140 `vec4` slot (64 bytes total).
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 pub struct LightData {
@@ -36,40 +40,77 @@ pub struct LightData {
     /// Light type (0=Directional, 1=Point, 2=Spot).
     pub light_type: u32,
 
-    /// Light color and intensity (intensity in w).
+    /// Light color.
     pub color: Vec3,
-    /// Spot angle (cos of half-angle), or range for point lights.
-    pub range_or_angle: f32,
+    /// Light intensity.
+    pub intensity: f32,
 
     /// Spot direction (normalized), unused for other types.
     pub spot_direction: Vec3,
-    /// Reserved for future use.
-    pub _reserved1: u32,
+    /// Point/spot attenuation range.
+    pub range: f32,
 
+    /// Cosine of the spot light half-angle; ignored for other light types.
+    pub spot_angle_cos: f32,
     /// Ambient influence (0.0 to 1.0).
     pub ambient_influence: f32,
     /// Whether this light casts shadows.
     pub casts_shadow: u32,
     /// Specular intensity.
     pub specular_intensity: f32,
-    /// Reserved for future use.
-    pub _reserved2: u32,
 }
+
+/// Fixed-size std140 uniform block uploaded by `Renderer` once per frame.
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+pub struct LightUniformBlock {
+    pub light_count: u32,
+    pub _padding: [u32; 3],
+    pub lights: [LightData; MAX_LIGHTS],
+}
+
+impl Default for LightUniformBlock {
+    fn default() -> Self {
+        Self::zeroed()
+    }
+}
+
+/// GLSL declarations matching [`LightUniformBlock`]. Include this text in a
+/// shader and call `Renderer::bind_light_block` for its `EngineLights` block.
+pub const LIGHTS_BLOCK_GLSL: &str = r#"
+struct EngineLight {
+    vec3 position_or_dir; uint light_type;
+    vec3 color; float intensity;
+    vec3 spot_direction; float range;
+    float spot_angle_cos; float ambient_influence;
+    uint casts_shadow; float specular_intensity;
+};
+layout(std140) uniform EngineLights {
+    uint uLightCount;
+    uint _lightPadding0;
+    uint _lightPadding1;
+    uint _lightPadding2;
+    EngineLight uLights[16];
+};
+"#;
+
+const _: () = assert!(std::mem::size_of::<LightData>() == 64);
+const _: () = assert!(std::mem::size_of::<LightUniformBlock>() == 16 + 64 * MAX_LIGHTS);
 
 impl LightData {
     /// Create light data for a directional light.
     pub fn directional(direction: Vec3, color: Vec3, intensity: f32) -> Self {
         Self {
-            position_or_dir: -direction.normalize(),
+            position_or_dir: -safe_direction(direction),
             light_type: LightType::Directional as u32,
             color,
-            range_or_angle: intensity,
+            intensity,
             spot_direction: Vec3::ZERO,
-            _reserved1: 0,
+            range: f32::INFINITY,
+            spot_angle_cos: -1.0,
             ambient_influence: 0.0,
             casts_shadow: 0,
             specular_intensity: 1.0,
-            _reserved2: 0,
         }
     }
 
@@ -78,14 +119,14 @@ impl LightData {
         Self {
             position_or_dir: position,
             light_type: LightType::Point as u32,
-            color: color * intensity,
-            range_or_angle: range,
+            color,
+            intensity,
             spot_direction: Vec3::ZERO,
-            _reserved1: 0,
+            range,
+            spot_angle_cos: -1.0,
             ambient_influence: 0.0,
             casts_shadow: 0,
             specular_intensity: 1.0,
-            _reserved2: 0,
         }
     }
 
@@ -95,21 +136,21 @@ impl LightData {
         direction: Vec3,
         color: Vec3,
         intensity: f32,
-        _range: f32,
+        range: f32,
         angle: f32,
     ) -> Self {
         let half_angle = angle * 0.5;
         Self {
             position_or_dir: position,
             light_type: LightType::Spot as u32,
-            color: color * intensity,
-            range_or_angle: half_angle.cos(),
-            spot_direction: direction.normalize(),
-            _reserved1: 0,
+            color,
+            intensity,
+            spot_direction: safe_direction(direction),
+            range,
+            spot_angle_cos: half_angle.cos(),
             ambient_influence: 0.0,
             casts_shadow: 0,
             specular_intensity: 1.0,
-            _reserved2: 0,
         }
     }
 }
@@ -133,7 +174,7 @@ impl Light {
         Self {
             id,
             position: Vec3::ZERO,
-            direction: direction.normalize(),
+            direction: safe_direction(direction),
             color,
             intensity,
             light_type: LightType::Directional,
@@ -171,7 +212,7 @@ impl Light {
         Self {
             id,
             position,
-            direction: direction.normalize(),
+            direction: safe_direction(direction),
             color,
             intensity,
             light_type: LightType::Spot,
@@ -218,7 +259,7 @@ impl Light {
     }
 
     pub fn set_direction(&mut self, dir: Vec3) {
-        self.direction = dir.normalize();
+        self.direction = safe_direction(dir);
     }
 
     pub fn color(&self) -> Vec3 {
@@ -330,14 +371,37 @@ impl LightManager {
     pub fn get_active_light_data(&self) -> Vec<LightData> {
         self.active_lights
             .iter()
+            .filter_map(|&id| {
+                self.lights
+                    .get(&id)
+                    .filter(|light| light.enabled())
+                    .map(|light| light.to_gpu_data())
+            })
             .take(MAX_LIGHTS)
-            .filter_map(|&id| self.lights.get(&id).map(|light| light.to_gpu_data()))
             .collect()
+    }
+
+    /// Fill fixed-size GPU data without allocating a temporary vector.
+    pub fn write_uniform_block(&self, block: &mut LightUniformBlock) {
+        *block = LightUniformBlock::default();
+        for &id in &self.active_lights {
+            if block.light_count as usize >= MAX_LIGHTS {
+                break;
+            }
+            if let Some(light) = self.lights.get(&id).filter(|light| light.enabled()) {
+                block.lights[block.light_count as usize] = light.to_gpu_data();
+                block.light_count += 1;
+            }
+        }
     }
 
     /// Get the number of active lights.
     pub fn active_light_count(&self) -> usize {
-        self.active_lights.len().min(MAX_LIGHTS)
+        self.active_lights
+            .iter()
+            .filter(|id| self.lights.get(id).is_some_and(Light::enabled))
+            .take(MAX_LIGHTS)
+            .count()
     }
 
     /// Get all active light IDs.

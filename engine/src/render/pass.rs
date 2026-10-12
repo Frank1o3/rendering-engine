@@ -1,24 +1,23 @@
 /// Render pass abstraction for organizing rendering stages.
 ///
-/// This module provides a lightweight pass system that separates concerns
-/// like state management, viewport configuration, clear behavior, and
-/// resource bindings for different rendering stages (Opaque, Transparent, UI, etc).
+/// This module provides lightweight pass configuration for viewport, depth,
+/// and clear behavior across rendering stages.
 use glam::Vec4;
 use std::cmp::Ordering;
 
 /// Defines the type of rendering pass.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PassType {
-    /// Opaque geometry pass (depth-tested, back-face culled).
-    Opaque = 0,
-    /// Transparent geometry pass (sorted by depth, blended).
-    Transparent = 1,
+    /// Shadow map pass (depth-only), before the color passes.
+    Shadow = 0,
     /// Skybox pass (depth-tested but no write).
-    Skybox = 2,
+    Skybox = 1,
+    /// Opaque geometry pass (depth-tested, back-face culled).
+    Opaque = 2,
+    /// Transparent geometry pass (sorted by depth, blended).
+    Transparent = 3,
     /// UI pass (viewport-local, no depth test).
-    UI = 3,
-    /// Shadow map pass (depth-only).
-    Shadow = 4,
+    UI = 4,
     /// Post-process pass (full-screen, no depth).
     PostProcess = 5,
 }
@@ -189,7 +188,9 @@ impl PartialOrd for PassGroup {
 
 impl Ord for PassGroup {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.pass_type.cmp(&other.pass_type)
+        self.pass_type
+            .cmp(&other.pass_type)
+            .then_with(|| self.index.cmp(&other.index))
     }
 }
 
@@ -215,8 +216,8 @@ mod tests {
         ];
         passes.sort();
 
-        assert_eq!(passes[0].pass_type, PassType::Opaque);
-        assert_eq!(passes[1].pass_type, PassType::Skybox);
+        assert_eq!(passes[0].pass_type, PassType::Skybox);
+        assert_eq!(passes[1].pass_type, PassType::Opaque);
         assert_eq!(passes[2].pass_type, PassType::UI);
     }
 

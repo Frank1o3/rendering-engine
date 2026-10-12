@@ -4,6 +4,7 @@ precision highp float;
 layout (location = 0) in vec3  aPos;
 layout (location = 1) in vec3  aNormal;   // packed i8 normalised → [-1,1] vec3
 layout (location = 2) in vec4  aColor;
+layout (location = 6) in vec2  aUV;
 
 layout (location = 3) in vec3  iPosition;
 layout (location = 4) in float iScale;
@@ -11,6 +12,8 @@ layout (location = 5) in vec4  iRotation;
 
 out vec4 vColor;
 out vec3 vWorldNormal;
+out vec3 vWorldPosition;
+out vec2 vUV;
 
 uniform mat4 uVP;
 
@@ -26,4 +29,6 @@ void main() {
     gl_Position  = uVP * vec4(worldPos, 1.0);
     vColor       = aColor;
     vWorldNormal = worldNormal;
+    vWorldPosition = worldPos;
+    vUV = aUV;
 }

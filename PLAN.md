@@ -17,7 +17,7 @@ The engine already contains several strong ideas:
 - `GeometryPool` consolidates mesh uploads into shared GPU storage.
 - `Renderer` batches draw calls by `(material, mesh)` to reduce GL state changes.
 - `PipelineCache` avoids repeated pipeline-state creation.
-- `TripleBuffer` provides a clean render-thread data handoff pattern.
+- Triple-buffer slots provide a latest-frame render-thread handoff.
 - `IndirectBuffer` lays a good foundation for future draw submission improvements.
 
 Those are the right ideas to build on. The next phase should focus on eliminating hidden costs and expanding the engine beyond a single-pass, single-primitive renderer.
@@ -28,13 +28,13 @@ Those are the right ideas to build on. The next phase should focus on eliminatin
 
 ### 1. Replace heavy per-frame vector churn with non-allocating frame structures
 
-Status: [x] Implemented
+Status: [~] Partial: reusable scratch buffers and clone-free frame handoff are implemented. Static/dynamic submission lists and strict no-growth guarantees still need work.
 
 Current observations:
 
-- `render()` recreates or grows `sorted_instances` and temporary vectors each frame.
-- `visible_indices` is allocated every frame during instance culling.
-- `pending_draws` is cleared and rebuilt each frame, even when the scene is mostly static.
+- Renderer-owned scratch vectors are reused, with conservative initial capacities.
+- The triple-buffer consumer swaps frame data to recycle its vector allocations instead of cloning them.
+- Dynamic and static render lists still share submission scratch, and workloads above configured capacities can still grow buffers.
 
 Recommended changes:
 
@@ -50,13 +50,13 @@ Why it matters:
 
 ### 2. Improve culling and visibility filtering
 
-Status: [x] Implemented (coarse spatial visibility window)
+Status: [~] Partial: a configurable coarse spatial window, incremental cell updates, and frustum checks are implemented. Occlusion culling and LOD are still open.
 
 Current observations:
 
-- Frustum culling is implemented in `render_instances()` using per-object sphere checks.
-- This is a good start, but it is still doing full scene traversal every frame.
-- Dynamic objects and UI commands are mixed into the same sorted-instance pass, which increases complexity.
+- Frustum culling uses per-object sphere checks after querying a configurable coarse spatial window.
+- The grid query walks occupied cells rather than probing every empty cell in the visibility cube.
+- Dynamic world commands still share opaque/transparent world lists; UI has a separate pass.
 
 Recommended changes:
 
@@ -71,7 +71,7 @@ Why it matters:
 
 ### 3. Add proper render pass/resource layering
 
-Status: [x] Partially implemented via pass helper methods
+Status: [~] Partial: skybox, opaque, depth-sorted transparent, and UI passes execute in order. Shadow and post-process execution remain open.
 
 Current observations:
 
@@ -91,10 +91,12 @@ Why it matters:
 
 ### 4. Optimize pipeline and state binding logic
 
+Status: [~] Pipeline IDs now avoid hash-collision aliasing, redundant pipeline binds are skipped, and uniform locations are cached. UBO/material blocks remain open.
+
 Current observations:
 
-- `apply_pipeline()` checks pipeline equality each time and binds program, cull mode, depth state, and blend state.
-- Shader uniform updates are done ad hoc, and there is no broader cache for uniform blocks or binding slots.
+- `apply_pipeline()` caches the active pipeline ID and skips redundant binds.
+- Shader uniform locations are cached, and the renderer provides an opt-in shared lighting UBO; general material/frame blocks remain open.
 
 Recommended changes:
 
@@ -109,6 +111,8 @@ Why it matters:
 - It also makes the engine more scalable as more material types are added.
 
 ### 5. Improve the transform buffer model and synchronization strategy
+
+Status: [~] Persistent mapping, fenced regions, and clone-free frame handoff are implemented. Dirty pages and separate static/dynamic transform streams remain open.
 
 Current observations:
 
@@ -127,6 +131,8 @@ Why it matters:
 - This is one of the most important bottlenecks for large scenes with lots of moving objects.
 
 ### 6. Expand MDI strategy support to a real backend-aware path
+
+Status: [~] The current glow submission remains the emulation path. Backend detection, native MDI, and benchmarks remain open.
 
 Current observations:
 
@@ -149,10 +155,12 @@ Why it matters:
 
 ### 7. Strengthen resource lifetime management and hot-reload support
 
+Status: [~] File-backed shader reload now preserves the previous program on failure. Generation handles, registry diagnostics, and material reload remain open.
+
 Current observations:
 
-- `ShaderManager`, `MaterialManager`, `TextureManager`, and mesh/geometry management all use IDs in a straightforward way.
-- Resource lifetime is controlled by a map keyed by IDs, but there is no explicit lifecycle policy beyond creation/drop behavior.
+- Resource managers use monotonic numeric IDs; they do not recycle slots, so generation counters are not yet needed to protect ordinary reuse.
+- File-backed shader programs can be reloaded transactionally. Material reload and registry diagnostics are still absent.
 
 Recommended changes:
 
@@ -166,6 +174,8 @@ Why it matters:
 - Stale resource IDs are a common source of subtle bugs in engines with many asset types.
 
 ### 8. Improve mesh and geometry streaming
+
+Status: [~] Manual mesh unload returns ranges to a free-list allocator. Streaming, compaction, and pool growth remain open.
 
 Current observations:
 
@@ -185,9 +195,12 @@ Why it matters:
 
 ### 9. Add a richer texture system
 
+Status: [~] Cubemaps, sRGB RGBA8 and BC1/4/5 upload paths, atlas UV helpers, and a CPU RGBA8 shelf packer exist. Streaming, atlas padding, and float/depth upload paths remain open.
+
 Current observations:
 
-- `Texture` supports basic 2D and array textures, but there is no broader texture manager API beyond ID storage.
+- `Texture` supports 2D, array, and cubemap targets, with sRGB and several compressed formats.
+- `TextureManager` stores IDs, and the CPU atlas packer supports RGBA8 shelf packing; streaming and more upload formats remain open.
 
 Recommended changes:
 
@@ -206,10 +219,10 @@ Why it matters:
 
 ### 10. Add lighting and material pipeline features
 
-Current functionality is still largely a forward shaded, unlit or simple-shaded material model. The engine would benefit from adding:
+Status: [~] The renderer uploads a fixed std140 light block (up to 16 directional, point, or spot lights), binds material properties/maps per material batch, and the demo shader evaluates diffuse lighting and albedo textures. Full PBR shading, tiled/clustered culling, and shadows remain open.
 
-- Directional light support
-- Point lights and spot lights
+The demo now evaluates directional, point, and spot lights through the engine's light UBO. The engine would benefit from adding:
+
 - Shadow map rendering
 - PBR material properties (metallic/roughness workflows)
 - Ambient lighting and IBL approximations
@@ -221,6 +234,8 @@ Recommended implementation path:
 - Add light culling by tile or cluster, if scene complexity justifies it.
 
 ### 11. Add post-processing and screen-space effects
+
+Status: [ ] Framebuffer support exists; no post-process chain or effects are wired into the renderer.
 
 The current renderer clears and draws directly, but it has no post-process pipeline.
 
@@ -241,6 +256,8 @@ Recommended architecture:
 
 ### 12. Add animation and skinned mesh support
 
+Status: [ ] No animation or skinning system is implemented.
+
 The engine currently treats objects as static transforms with instanced mesh rendering. There is no animation system.
 
 Recommended additions:
@@ -252,6 +269,8 @@ Recommended additions:
 
 ### 13. Add particle and volumetric systems
 
+Status: [ ] No particle or volumetric system is implemented.
+
 Useful extensions:
 
 - Sprite-based particles
@@ -261,6 +280,8 @@ Useful extensions:
 - Smoke/fog layering
 
 ### 14. Add editor and debugging utilities
+
+Status: [~] Renderer frame stats expose submitted/culled instances, draw calls, pipeline changes, and triangle estimates. The demo has wireframe/FPS controls and the renderer exposes mesh-pool stats; visual bounds/frustum tools and GPU memory totals remain open.
 
 A robust engine should expose debugging support:
 
@@ -279,6 +300,8 @@ This would likely be very useful for tuning and validating the engine during dev
 
 ### 15. Separate high-level scene logic from low-level render submission
 
+Status: [~] Renderer responsibilities have been split into smaller implementation modules; scene management and low-level submission are still methods on `Renderer`.
+
 Current observations:
 
 - The renderer owns a large amount of logic: scene management, frustum culling, batching, drawing, and pipeline state.
@@ -292,7 +315,7 @@ Recommended refactor:
 
 ### 16. Add a proper engine configuration layer
 
-Status: [x] Implemented
+Status: [~] Partial: renderer sizing, buffer, and culling-window settings are configurable. MSAA and rendering feature toggles remain open.
 
 Current observations:
 
@@ -312,6 +335,8 @@ Recommended changes:
   - post-processing enable flags
 
 ### 17. Improve engine testing and validation
+
+Status: [~] Focused unit tests exist for allocator, pass, material, shader-manager, and atlas behavior. The broader regression coverage listed below remains open.
 
 Current codebase appears to be implementation-focused and could benefit from better regression coverage.
 

@@ -114,8 +114,11 @@ pub fn start_render_thread(
         renderer.upload_shader_vec3(skybox_shader_id, "uSunColor", sun_color);
         renderer.upload_shader_f32(skybox_shader_id, "uSunSize", sun_size);
 
-        // Upload lit shader uniforms
-        renderer.upload_shader_vec3(lit_shader, "uSunDir", sun_dir);
+        // The engine uploads this light through its fixed std140 UBO each frame.
+        renderer.lights.create_directional(-sun_dir, sun_color, 1.0);
+        renderer.bind_light_block(lit_shader);
+
+        // Upload remaining demo-specific lit shader uniforms.
         renderer.upload_shader_f32(lit_shader, "uAmbient", 0.38);
         renderer.upload_shader_f32(lit_shader, "uWireframe", 0.0);
 
@@ -125,7 +128,7 @@ pub fn start_render_thread(
         let ui_pipeline = PipelineState {
             shader_id: ui_shader.0,
             cull_mode: CullMode::None,
-            depth_test: true,
+            depth_test: false,
             depth_write: false,
             depth_func: DepthFunc::Less,
             blend_enabled: true,

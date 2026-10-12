@@ -46,6 +46,7 @@ pub struct Scene {
     next_handle: u32,
     cell_size: f32,
     grid: HashMap<(i32, i32, i32), Vec<ObjectHandle>>,
+    cell_by_handle: HashMap<ObjectHandle, (i32, i32, i32)>,
     grid_dirty: bool,
 
     /// True when the *set* of objects changed (added/removed) — the only
@@ -71,6 +72,7 @@ impl Scene {
             next_handle: 0,
             cell_size: 32.0,
             grid: HashMap::new(),
+            cell_by_handle: HashMap::new(),
             grid_dirty: false,
             order_dirty: false,
             dynamic_handles: HashSet::new(),
@@ -105,6 +107,11 @@ impl Scene {
         }
 
         self.objects.insert(handle, obj);
+        if !self.grid_dirty {
+            let cell = Self::cell_for(Vec3::ZERO, self.cell_size);
+            self.grid.entry(cell).or_default().push(handle);
+            self.cell_by_handle.insert(handle, cell);
+        }
         self.order_dirty = true;
         handle
     }
@@ -113,18 +120,42 @@ impl Scene {
         if self.objects.remove(&handle).is_some() {
             self.dynamic_handles.remove(&handle);
             self.moved_static.remove(&handle);
-            self.grid_dirty = true;
+            if !self.grid_dirty {
+                if let Some(cell) = self.cell_by_handle.remove(&handle)
+                    && let Some(handles) = self.grid.get_mut(&cell)
+                {
+                    handles.retain(|candidate| *candidate != handle);
+                    if handles.is_empty() {
+                        self.grid.remove(&cell);
+                    }
+                }
+            }
             self.order_dirty = true;
         }
     }
 
     fn mark_moved(&mut self, handle: ObjectHandle) {
-        if let Some(obj) = self.objects.get_mut(&handle) {
-            obj.dirty = true;
-            self.grid_dirty = true;
-            if obj.kind != ObjectKind::Dynamic {
-                self.moved_static.insert(handle);
+        let Some(obj) = self.objects.get_mut(&handle) else {
+            return;
+        };
+        obj.dirty = true;
+        let kind = obj.kind;
+        let new_cell = Self::cell_for(obj.position, self.cell_size);
+        if !self.grid_dirty
+            && let Some(old_cell) = self.cell_by_handle.get(&handle).copied()
+            && old_cell != new_cell
+        {
+            if let Some(handles) = self.grid.get_mut(&old_cell) {
+                handles.retain(|candidate| *candidate != handle);
+                if handles.is_empty() {
+                    self.grid.remove(&old_cell);
+                }
             }
+            self.grid.entry(new_cell).or_default().push(handle);
+            self.cell_by_handle.insert(handle, new_cell);
+        }
+        if kind != ObjectKind::Dynamic {
+            self.moved_static.insert(handle);
         }
     }
 
@@ -138,9 +169,11 @@ impl Scene {
 
     fn rebuild_grid(&mut self) {
         self.grid.clear();
+        self.cell_by_handle.clear();
         for (&handle, obj) in &self.objects {
             let cell = Self::cell_for(obj.position, self.cell_size);
             self.grid.entry(cell).or_default().push(handle);
+            self.cell_by_handle.insert(handle, cell);
         }
         self.grid_dirty = false;
     }
@@ -241,23 +274,21 @@ impl Scene {
         let origin = Self::cell_for(camera_position, self.cell_size);
         out.clear();
 
-        for x in -radius_cells..=radius_cells {
-            for y in -radius_cells..=radius_cells {
-                for z in -radius_cells..=radius_cells {
-                    let key = (origin.0 + x, origin.1 + y, origin.2 + z);
-                    let Some(handles) = self.grid.get(&key) else {
-                        continue;
-                    };
-
-                    for &handle in handles {
-                        if let Some(obj) = self.objects.get(&handle) {
-                            out.push(SortedInstance {
-                                material_id: obj.material_id,
-                                mesh_id: obj.mesh_id,
-                                instance: obj.cached,
-                            });
-                        }
-                    }
+        let radius = radius_cells.max(0) as u32;
+        for (&cell, handles) in &self.grid {
+            if origin.0.abs_diff(cell.0) > radius
+                || origin.1.abs_diff(cell.1) > radius
+                || origin.2.abs_diff(cell.2) > radius
+            {
+                continue;
+            }
+            for &handle in handles {
+                if let Some(obj) = self.objects.get(&handle) {
+                    out.push(SortedInstance {
+                        material_id: obj.material_id,
+                        mesh_id: obj.mesh_id,
+                        instance: obj.cached,
+                    });
                 }
             }
         }
@@ -288,24 +319,16 @@ impl Scene {
         }
 
         let origin = Self::cell_for(camera_position, self.cell_size);
-        let mut count = 0;
-        let mut seen = HashSet::new();
-
-        for x in -radius_cells..=radius_cells {
-            for y in -radius_cells..=radius_cells {
-                for z in -radius_cells..=radius_cells {
-                    let key = (origin.0 + x, origin.1 + y, origin.2 + z);
-                    if let Some(handles) = self.grid.get(&key) {
-                        for &handle in handles {
-                            if seen.insert(handle) {
-                                count += 1;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        count
+        let radius = radius_cells.max(0) as u32;
+        self.grid
+            .iter()
+            .filter(|(cell, _)| {
+                origin.0.abs_diff(cell.0) <= radius
+                    && origin.1.abs_diff(cell.1) <= radius
+                    && origin.2.abs_diff(cell.2) <= radius
+            })
+            .map(|(_, handles)| handles.len())
+            .sum()
     }
 
     /// Get the cell size used for spatial partitioning.

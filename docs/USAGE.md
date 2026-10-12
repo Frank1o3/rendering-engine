@@ -18,19 +18,27 @@ use rendering_engine::render;    // Renderer, PipelineState, Framebuffer, Skybox
 
 ## 1. Initializing the Renderer
 
-The main entry point is `rendering_engine::render::Renderer`. It consumes a `glow::Context` and a `ReadHandle<FrameData>` (from a `triple_buffer` SPSC queue for off-thread rendering).
+The main entry point is `rendering_engine::render::Renderer`. Construct it on the render thread, after that thread has made its OpenGL context current. `Renderer` is intentionally not `Send`, so Rust prevents moving a live renderer to another thread. The game thread can publish `FrameData` through the triple buffer without making GL calls.
 
 ```rust
 use rendering_engine::core::triple_buffer::new_triple_buffer;
 use rendering_engine::render::frame_data::FrameData;
 use rendering_engine::render::renderer::Renderer;
-use std::sync::Arc;
+use std::thread;
 
 // 1. Create triple buffer for thread synchronization
 let (write_handle, read_handle) = new_triple_buffer::<FrameData>();
 
-// 2. Initialize Renderer on your render thread with a glow context
-let mut renderer = Renderer::new(gl_context, read_handle);
+// 2. Move the not-current platform context to the render thread. Make it
+// current and construct Renderer inside that thread before using any GL API.
+let render_thread = thread::spawn(move || {
+    let gl_context = make_context_current_on_this_thread();
+    let mut renderer = Renderer::new(gl_context, read_handle);
+    while should_render() {
+        renderer.render();
+        swap_window_buffers();
+    }
+});
 ```
 
 ---
@@ -67,6 +75,8 @@ let atlas = TextureAtlas::new(texture, (16, 16), (4, 4));
 let [u_min, v_min, u_max, v_max] = atlas.uv_rect(tile_x, tile_y);
 ```
 
+For named source images, `resources::texture::pack_rgba8` shelf-packs RGBA8 pixels into one upload-ready atlas and returns per-image pixel and UV regions.
+
 ### Material Creation
 Materials group a shader, pipeline state (cull mode, depth testing, blending), and optional texture bindings:
 
@@ -87,6 +97,22 @@ let pipeline = PipelineState {
 
 let material_id = renderer.create_material_with_texture(shader_id, pipeline, Some(texture_id));
 ```
+
+Material properties and optional albedo, normal, metallic/roughness, AO, and emissive maps are bound per material batch. The standard sampler names are `uAlbedoTexture`, `uNormalTexture`, `uMetallicRoughnessTexture`, `uAOTexture`, and `uEmissiveTexture`; shaders can check the matching `uHas...Texture` integer uniforms. `lit.frag` demonstrates albedo map use.
+
+### Renderer light block
+The renderer uploads up to 16 enabled lights to a std140 uniform buffer each frame. Add the engine declaration to a shader and bind its block once after loading the shader:
+
+```rust
+renderer.lights.create_directional(
+    glam::Vec3::new(-0.4, -1.0, -0.2),
+    glam::Vec3::ONE,
+    1.0,
+);
+renderer.bind_light_block(shader_id);
+```
+
+`render::LIGHTS_BLOCK_GLSL` provides the matching GLSL block declaration. The material shader still chooses the lighting model and evaluates the lights.
 
 ---
 
@@ -165,9 +191,11 @@ compute.memory_barrier(glow::SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
 ## 6. Rendering Loop Execution
 
-Submit per-frame commands on your main/game thread and call `renderer.render()` on your render thread:
+Submit per-frame commands on your main/game thread. The renderer thread consumes the newest published frame and owns all GL work, including buffer swaps:
 
 ```rust
 // On Render Thread:
 renderer.render();
 ```
+
+The platform layer is responsible for creating and transferring a *not-current* context to the render thread, making it current there, and creating the `glow::Context` there. Do not construct `Renderer` on the game thread and then move it. The demo follows this ownership pattern in `demo/src/render_thread.rs`.
