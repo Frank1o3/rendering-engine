@@ -45,4 +45,9 @@ impl Renderer {
     pub fn current_frustum(&self) -> Option<[Vec4; 6]> {
         self.last_frustum
     }
+
+    /// Camera position from the most recently consumed frame.
+    pub fn current_camera_position(&self) -> glam::Vec3 {
+        self.last_frame.camera_position
+    }
 }

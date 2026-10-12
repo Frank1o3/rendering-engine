@@ -94,7 +94,7 @@ pub fn create_demo_state(event_loop: &ActiveEventLoop) -> DemoState {
         assets,
         width: config.window_width,
         height: config.window_height,
-        camera_pos: Vec3::new(0.0, 50.0, 0.0),
+        camera_pos: Vec3::new(0.0, 80.0, 0.0),
         camera_yaw: 0.0,
         // Face toward the terrain at startup instead of looking level above
         // the horizon. Negative pitch points down in the demo's camera basis.

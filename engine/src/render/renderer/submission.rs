@@ -64,33 +64,41 @@ impl Renderer {
 
     fn render_skybox_pass(&mut self, inv_vp: &glam::Mat4) {
         if let Some(skybox) = &self.skybox {
-            skybox.draw(&self.shaders, inv_vp);
+            skybox.draw_at_time(
+                &self.shaders,
+                inv_vp,
+                self.last_frame.camera_position,
+                self.start_time.elapsed().as_secs_f32(),
+            );
         }
     }
 
     fn render_ui_pass(&mut self, transform_offset: usize, region_limit: usize) {
-        if self.last_frame.ui_commands.is_empty() {
-            return;
+        if !self.last_frame.ui_commands.is_empty() {
+            let w = self.width as f32;
+            let h = self.height as f32;
+            let ui_proj = glam::Mat4::from_translation(glam::Vec3::new(-1.0, 1.0, 0.0))
+                * glam::Mat4::from_scale(glam::Vec3::new(2.0 / w, -2.0 / h, 1.0));
+
+            self.frame_scratch.sorted_instances.clear();
+            for cmd in &self.last_frame.ui_commands {
+                self.frame_scratch.sorted_instances.push(SortedInstance {
+                    material_id: cmd.material_id,
+                    mesh_id: cmd.mesh_id,
+                    instance: cmd.to_instance_data(),
+                });
+            }
+            self.frame_scratch
+                .sorted_instances
+                .sort_unstable_by_key(|o| (o.material_id, o.mesh_id));
+
+            self.render_instances(&ui_proj, transform_offset, region_limit, None);
         }
 
-        let w = self.width as f32;
-        let h = self.height as f32;
-        let ui_proj = glam::Mat4::from_translation(glam::Vec3::new(-1.0, 1.0, 0.0))
-            * glam::Mat4::from_scale(glam::Vec3::new(2.0 / w, -2.0 / h, 1.0));
-
-        self.frame_scratch.sorted_instances.clear();
-        for cmd in &self.last_frame.ui_commands {
-            self.frame_scratch.sorted_instances.push(SortedInstance {
-                material_id: cmd.material_id,
-                mesh_id: cmd.mesh_id,
-                instance: cmd.to_instance_data(),
-            });
-        }
-        self.frame_scratch
-            .sorted_instances
-            .sort_unstable_by_key(|o| (o.material_id, o.mesh_id));
-
-        self.render_instances(&ui_proj, transform_offset, region_limit, None);
+        // The screen-space list is the final overlay layer, after scene and
+        // legacy mesh-backed UI draws.
+        self.ui_renderer
+            .draw(&self.last_frame.ui, self.width, self.height);
     }
 
     pub(super) fn render_instances(

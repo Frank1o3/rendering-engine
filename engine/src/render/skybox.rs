@@ -11,6 +11,7 @@ pub struct SkyboxPipeline {
     gl: Arc<glow::Context>,
     pub shader_id: ShaderId,
     pub color: glam::Vec3,
+    pub cloud_coverage: f32,
     pub enabled: bool,
     dummy_vao: glow::VertexArray,
 }
@@ -25,12 +26,25 @@ impl SkyboxPipeline {
             gl,
             shader_id,
             color: glam::Vec3::ONE,
+            cloud_coverage: 0.0,
             enabled: false,
             dummy_vao,
         }
     }
 
+    /// Draw the skybox without animation time. Kept for callers that don't use
+    /// animated sky effects.
     pub fn draw(&self, shaders: &ShaderManager, inv_vp: &glam::Mat4) {
+        self.draw_at_time(shaders, inv_vp, glam::Vec3::ZERO, 0.0);
+    }
+
+    pub(crate) fn draw_at_time(
+        &self,
+        shaders: &ShaderManager,
+        inv_vp: &glam::Mat4,
+        camera_position: glam::Vec3,
+        time_seconds: f32,
+    ) {
         if !self.enabled {
             return;
         }
@@ -42,7 +56,10 @@ impl SkyboxPipeline {
         unsafe {
             self.gl.use_program(Some(shader.program));
             shader.set_mat4("uInvVP", inv_vp);
+            shader.set_vec3("uCameraPosition", camera_position);
             shader.set_vec3("uSkyColor", self.color);
+            shader.set_f32("uCloudCoverage", self.cloud_coverage);
+            shader.set_f32("uTime", time_seconds);
 
             self.gl.disable(glow::CULL_FACE);
             self.gl.enable(glow::DEPTH_TEST);

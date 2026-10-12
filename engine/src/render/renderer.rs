@@ -11,6 +11,7 @@ use crate::render::pipeline::{PipelineCache, PipelineState, PipelineStateId};
 use crate::render::scene::{ObjectHandle, ObjectKind, Scene, SortedInstance};
 use crate::render::skybox::SkyboxPipeline;
 use crate::render::stats::FrameStats;
+use crate::render::ui::UiRenderer;
 use crate::resources::geometry_pool::GeometryPool;
 use crate::resources::material::{MaterialId, MaterialManager};
 use crate::resources::mesh::{Mesh, MeshData};
@@ -65,6 +66,7 @@ pub struct Renderer {
     /// Scene lights uploaded to the `EngineLights` uniform block each frame.
     pub lights: LightManager,
     pub skybox: Option<SkyboxPipeline>,
+    ui_renderer: UiRenderer,
     meshes: HashMap<MeshId, Mesh>,
     next_mesh_id: u32,
     transform_buffer: PersistentMappedBuffer,
@@ -88,6 +90,7 @@ pub struct Renderer {
 
     region_fences: Vec<Option<glow::Fence>>,
     frame_index: u64,
+    start_time: std::time::Instant,
     last_frustum: Option<[Vec4; 6]>,
 
     /// Reusable scratch buffers for frame rendering to avoid per-frame allocations.
@@ -130,6 +133,7 @@ impl Renderer {
         let geometry_pool = GeometryPool::new(gl.clone(), transform_buffer.handle);
         let indirect_buffer =
             IndirectBuffer::with_capacity(gl.clone(), true, config.indirect_command_capacity);
+        let ui_renderer = UiRenderer::new(gl.clone());
 
         Self {
             gl,
@@ -139,6 +143,7 @@ impl Renderer {
             textures: TextureManager::new(),
             lights: LightManager::new(),
             skybox: None,
+            ui_renderer,
             meshes: HashMap::new(),
             transform_buffer,
             lighting_buffer,
@@ -158,6 +163,7 @@ impl Renderer {
             has_frame: false,
             region_fences: vec![None; transform_regions],
             frame_index: 0,
+            start_time: std::time::Instant::now(),
             last_frustum: None,
             frame_scratch: FrameScratchBuffers::with_capacities(max_objects, draw_capacity),
             _thread_affinity: PhantomData,

@@ -42,7 +42,6 @@ impl Renderer {
             } else {
                 self.gl.disable(glow::DEPTH_TEST);
             }
-            self.gl.depth_mask(pass.depth_write);
         }
 
         if let Some(color) = pass.clear_color {
@@ -53,7 +52,17 @@ impl Renderer {
 
         if pass.clear_flags.color || pass.clear_flags.depth || pass.clear_flags.stencil {
             unsafe {
+                // OpenGL applies the depth write mask to depth clears too.
+                // Clear with writes enabled, then restore this pass's setting.
+                if pass.clear_flags.depth {
+                    self.gl.depth_mask(true);
+                }
                 self.gl.clear(pass.clear_flags.to_gl_bits());
+                self.gl.depth_mask(pass.depth_write);
+            }
+        } else {
+            unsafe {
+                self.gl.depth_mask(pass.depth_write);
             }
         }
     }

@@ -14,9 +14,7 @@ use winit::{event_loop::ActiveEventLoop, window::Window};
 
 use rendering_engine::core::triple_buffer::WriteHandle;
 use rendering_engine::render::frame_data::FrameData;
-use rendering_engine::render::renderer::MeshId;
 use rendering_engine::resources::material::MaterialId;
-use rendering_engine::resources::shader::ShaderId;
 
 use crate::{render_thread::RenderCommand, touch::TouchKind, voxel::world::World};
 
@@ -31,13 +29,7 @@ pub struct Keys {
 }
 
 pub struct Assets {
-    pub quad_mesh: MeshId,
-    pub button_quad_mesh: MeshId,
-    pub vsync_button_mesh: MeshId,
-    pub wireframe_button_mesh: MeshId,
     pub terrain_material: MaterialId,
-    pub ui_material: MaterialId,
-    pub lit_shader: ShaderId,
 }
 
 pub struct DemoState {

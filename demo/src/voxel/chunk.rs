@@ -41,9 +41,8 @@ impl ChunkPos {
         (min, max)
     }
 
-    /// AABB-vs-frustum-planes visibility test. Single source of truth so
-    /// `World`'s load prioritization and the render thread's GPU
-    /// promote/evict decisions never disagree about what's "in view."
+    /// AABB-vs-frustum-planes visibility test used by the render thread's
+    /// GPU promote/evict decisions.
     pub fn is_visible(&self, planes: &[Vec4; 6]) -> bool {
         let (min, max) = self.aabb();
         for plane in planes {

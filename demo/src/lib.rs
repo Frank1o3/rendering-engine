@@ -4,7 +4,6 @@ pub mod config;
 mod font;
 mod game;
 mod input;
-mod meshes;
 mod render_thread;
 mod renderer_setup;
 mod shaders;

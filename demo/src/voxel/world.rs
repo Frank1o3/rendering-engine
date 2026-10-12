@@ -3,7 +3,7 @@ use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use glam::{Vec3, Vec4};
+use glam::Vec3;
 
 use super::chunk::{CHUNK_SIZE_X, CHUNK_SIZE_Z, ChunkPos};
 use super::mesher::mesh_chunk;
@@ -29,14 +29,10 @@ struct MeshReady {
 /// In-progress state for an incremental needed-set rebuild, resumed across
 /// `update()` calls until `index` reaches `total`.
 struct RebuildState {
-    center: ChunkPos,
-    rd: i32,
-    side: i32,
+    positions: Vec<ChunkPos>,
     index: i32,
     total: i32,
     needed: HashSet<ChunkPos>,
-    visible: Vec<ChunkPos>,
-    rest: Vec<ChunkPos>,
 }
 
 pub struct World {
@@ -46,9 +42,8 @@ pub struct World {
     task_tx: Sender<ChunkPos>,
     ready_rx: Receiver<MeshReady>,
     render_tx: SyncSender<RenderCommand>,
-    max_load_per_frame: usize,
+    max_in_flight: usize,
     load_queue: VecDeque<ChunkPos>,
-    last_forward: Vec3,
     pending_rebuild: Option<RebuildState>,
 }
 
@@ -122,21 +117,16 @@ impl World {
             task_tx,
             ready_rx,
             render_tx,
-            max_load_per_frame: 4,
+            max_in_flight: worker_count,
             load_queue: VecDeque::new(),
-            last_forward: Vec3::NEG_Z,
             pending_rebuild: None,
         }
     }
 
-    pub fn update(&mut self, player_pos: Vec3, camera_forward: Vec3, frustum_planes: &[Vec4; 6]) {
+    pub fn update(&mut self, player_pos: Vec3) {
         let px = (player_pos.x / CHUNK_SIZE_X as f32).floor() as i32;
         let pz = (player_pos.z / CHUNK_SIZE_Z as f32).floor() as i32;
         let player_chunk = ChunkPos { x: px, z: pz };
-
-        while let Ok(MeshReady { pos }) = self.ready_rx.try_recv() {
-            self.chunks.insert(pos, ChunkState::Loaded);
-        }
 
         if player_chunk != self.player_chunk {
             // Crossed a chunk boundary — (re)start an incremental rebuild.
@@ -145,14 +135,29 @@ impl World {
             // the old partial state is discarded rather than finished.
             self.player_chunk = player_chunk;
             self.start_rebuild(player_chunk);
-            self.last_forward = camera_forward;
+        }
+
+        // A worker can finish a chunk after the player has moved and the
+        // previous needed-set scan has completed. Don't let that stale result
+        // become a permanent loaded chunk outside the current render radius.
+        let rd = self.render_distance.max(0);
+        let mut stale_ready = Vec::new();
+        while let Ok(MeshReady { pos }) = self.ready_rx.try_recv() {
+            if (pos.x - player_chunk.x).abs() <= rd && (pos.z - player_chunk.z).abs() <= rd {
+                self.chunks.insert(pos, ChunkState::Loaded);
+            } else {
+                self.chunks.remove(&pos);
+                stale_ready.push(pos);
+            }
+        }
+        if !stale_ready.is_empty() {
+            let _ = self
+                .render_tx
+                .send(RenderCommand::RemoveChunks(stale_ready));
         }
 
         if self.pending_rebuild.is_some() {
-            self.step_rebuild(frustum_planes, REBUILD_CELLS_PER_FRAME);
-        } else if self.last_forward.dot(camera_forward) < 0.95 {
-            self.reprioritize_queue(player_chunk, frustum_planes);
-            self.last_forward = camera_forward;
+            self.step_rebuild(REBUILD_CELLS_PER_FRAME);
         }
 
         let loading_count = self
@@ -160,7 +165,7 @@ impl World {
             .values()
             .filter(|s| **s == ChunkState::Loading)
             .count();
-        let mut can_start = self.max_load_per_frame.saturating_sub(loading_count);
+        let mut can_start = self.max_in_flight.saturating_sub(loading_count);
 
         while can_start > 0 {
             let Some(pos) = self.load_queue.pop_front() else {
@@ -175,54 +180,55 @@ impl World {
         }
     }
 
-    /// Begins a fresh incremental rebuild. Doesn't touch `load_queue` or
-    /// send any removals yet — those only happen once `step_rebuild`
-    /// finishes the full scan, so we know the complete needed-set before
-    /// deciding what's actually stale.
+    /// Begins an incremental, center-out rebuild. The radial queue is
+    /// generated in distance order and can be consumed by workers while the
+    /// scan continues, so the center becomes visible before the outer ring.
     fn start_rebuild(&mut self, center: ChunkPos) {
-        let rd = self.render_distance;
-        let side = 2 * rd + 1;
-        let total = side * side;
+        let rd = self.render_distance.max(0);
+        let mut positions = Vec::with_capacity(((2 * rd + 1) * (2 * rd + 1)) as usize);
+        for dz in -rd..=rd {
+            for dx in -rd..=rd {
+                positions.push(ChunkPos {
+                    x: center.x + dx,
+                    z: center.z + dz,
+                });
+            }
+        }
+        positions.sort_by_key(|pos| {
+            let dx = pos.x - center.x;
+            let dz = pos.z - center.z;
+            (dx * dx + dz * dz, dz, dx)
+        });
+        let total = positions.len() as i32;
+
+        // Discard work that has not yet been handed to a worker for the old
+        // center. Already-running jobs finish normally and may be reused.
+        self.load_queue.clear();
 
         self.pending_rebuild = Some(RebuildState {
-            center,
-            rd,
-            side,
+            positions,
             index: 0,
             total,
             needed: HashSet::with_capacity((total) as usize),
-            visible: Vec::new(),
-            rest: Vec::new(),
         });
     }
 
-    /// Processes up to `budget` grid cells of the in-progress rebuild.
-    /// When it finishes the full scan, computes stale chunks, sends one
-    /// batched `RemoveChunks` (instead of one send per chunk — the thing
-    /// that was blocking the main thread on a bursty boundary crossing),
-    /// and replaces `load_queue` with the freshly sorted result.
-    fn step_rebuild(&mut self, frustum_planes: &[Vec4; 6], budget: i32) {
+    /// Processes up to `budget` positions, immediately queueing missing
+    /// chunks in radial order. Once the full needed-set is known, stale
+    /// loaded chunks are removed in one batch.
+    fn step_rebuild(&mut self, budget: i32) {
         let Some(state) = self.pending_rebuild.as_mut() else {
             return;
         };
 
         let mut processed = 0;
         while state.index < state.total && processed < budget {
-            let dx = state.index % state.side - state.rd;
-            let dz = state.index / state.side - state.rd;
-            let pos = ChunkPos {
-                x: state.center.x + dx,
-                z: state.center.z + dz,
-            };
+            let pos = state.positions[state.index as usize];
 
             state.needed.insert(pos);
 
             if !self.chunks.contains_key(&pos) {
-                if pos.is_visible(frustum_planes) {
-                    state.visible.push(pos);
-                } else {
-                    state.rest.push(pos);
-                }
+                self.load_queue.push_back(pos);
             }
 
             state.index += 1;
@@ -233,9 +239,9 @@ impl World {
             return; // more to do next frame
         }
 
-        // Scan complete — finalize.
+        // Scan complete — finalize stale chunk removal. The queue was
+        // already consumed incrementally by the worker scheduler.
         let state = self.pending_rebuild.take().unwrap();
-        let center = state.center;
 
         let to_remove: Vec<ChunkPos> = self
             .chunks
@@ -253,37 +259,5 @@ impl World {
             // a burst of evictions.
             let _ = self.render_tx.send(RenderCommand::RemoveChunks(to_remove));
         }
-
-        let mut visible = state.visible;
-        let mut rest = state.rest;
-        let dist2 = |p: &ChunkPos| (p.x - center.x).pow(2) + (p.z - center.z).pow(2);
-        visible.sort_by_key(dist2);
-        rest.sort_by_key(dist2);
-
-        self.load_queue.clear();
-        self.load_queue.extend(visible);
-        self.load_queue.extend(rest);
-    }
-
-    /// Cheap re-sort of the *existing* queue by current visibility/distance.
-    /// Unchanged from before — this one was never the problem.
-    fn reprioritize_queue(&mut self, center: ChunkPos, frustum_planes: &[Vec4; 6]) {
-        let mut visible = Vec::new();
-        let mut rest = Vec::new();
-
-        for pos in self.load_queue.drain(..) {
-            if pos.is_visible(frustum_planes) {
-                visible.push(pos);
-            } else {
-                rest.push(pos);
-            }
-        }
-
-        let dist2 = |p: &ChunkPos| (p.x - center.x).pow(2) + (p.z - center.z).pow(2);
-        visible.sort_by_key(dist2);
-        rest.sort_by_key(dist2);
-
-        self.load_queue.extend(visible);
-        self.load_queue.extend(rest);
     }
 }

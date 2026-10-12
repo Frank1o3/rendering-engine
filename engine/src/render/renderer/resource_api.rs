@@ -196,6 +196,14 @@ impl Renderer {
         }
     }
 
+    /// Set animated cloud density for skybox shaders that use the built-in
+    /// `uCloudCoverage` uniform. Zero disables the cloud layer; one is dense.
+    pub fn set_skybox_cloud_coverage(&mut self, coverage: f32) {
+        if let Some(skybox) = &mut self.skybox {
+            skybox.cloud_coverage = coverage.clamp(0.0, 1.0);
+        }
+    }
+
     pub fn mesh_pool_stats(&self) -> ((usize, usize), (usize, usize)) {
         (
             (

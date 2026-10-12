@@ -1,8 +1,4 @@
-use glam::{Quat, Vec3};
-
-use rendering_engine::render::frame_data::RenderCommand;
-use rendering_engine::render::renderer::MeshId;
-use rendering_engine::resources::material::MaterialId;
+use rendering_engine::render::ui::UiDrawList;
 
 const FONT: [[u8; 5]; 10] = [
     [0b111, 0b101, 0b101, 0b101, 0b111], // 0
@@ -33,13 +29,12 @@ fn char_glyph(ch: char) -> Option<[u8; 5]> {
 }
 
 pub fn emit_ui_text(
-    commands: &mut Vec<RenderCommand>,
-    mesh_id: MeshId,
-    material_id: MaterialId,
+    ui: &mut UiDrawList,
     mut x: f32,
     y: f32,
     text: &str,
     pixel_size: f32,
+    color: [u8; 4],
 ) {
     for ch in text.chars() {
         match ch {
@@ -50,13 +45,13 @@ pub fn emit_ui_text(
 
             ':' => {
                 for &row in &[1u32, 3] {
-                    commands.push(RenderCommand {
-                        mesh_id,
-                        material_id,
-                        position: Vec3::new(x + pixel_size, y + row as f32 * pixel_size, 0.0),
-                        rotation: Quat::IDENTITY,
-                        scale: pixel_size * 0.9,
-                    });
+                    ui.rect(
+                        x + pixel_size,
+                        y + row as f32 * pixel_size,
+                        pixel_size * 0.9,
+                        pixel_size * 0.9,
+                        color,
+                    );
                 }
 
                 x += 3.0 * pixel_size;
@@ -76,17 +71,13 @@ pub fn emit_ui_text(
             for (row_idx, &row) in rows.iter().enumerate() {
                 for col in 0..3u32 {
                     if (row & (1 << (2 - col))) != 0 {
-                        commands.push(RenderCommand {
-                            mesh_id,
-                            material_id,
-                            position: Vec3::new(
-                                x + col as f32 * pixel_size,
-                                y + row_idx as f32 * pixel_size,
-                                0.0,
-                            ),
-                            rotation: Quat::IDENTITY,
-                            scale: pixel_size * 0.9,
-                        });
+                        ui.rect(
+                            x + col as f32 * pixel_size,
+                            y + row_idx as f32 * pixel_size,
+                            pixel_size * 0.9,
+                            pixel_size * 0.9,
+                            color,
+                        );
                     }
                 }
             }

@@ -1,4 +1,5 @@
 use crate::render::renderer::MeshId;
+use crate::render::ui::UiDrawList;
 use crate::resources::material::MaterialId;
 use bytemuck::{Pod, Zeroable};
 use glam::{Quat, Vec3};
@@ -53,6 +54,9 @@ impl RenderCommand {
 /// Per-frame payload passed via triple buffer.
 pub struct FrameData {
     pub commands: Vec<RenderCommand>,
+    /// Dedicated screen-space overlay geometry, independent of scene draws.
+    pub ui: UiDrawList,
+    /// Legacy mesh-backed overlay commands. Prefer `ui` for 2D elements.
     pub ui_commands: Vec<RenderCommand>,
 
     pub camera_position: Vec3,
@@ -68,6 +72,7 @@ impl Default for FrameData {
     fn default() -> Self {
         Self {
             commands: Vec::with_capacity(1024),
+            ui: UiDrawList::default(),
             ui_commands: Vec::with_capacity(256),
             camera_position: Vec3::ZERO,
             camera_rotation: Quat::IDENTITY,
@@ -83,6 +88,7 @@ impl Clone for FrameData {
     fn clone(&self) -> Self {
         Self {
             commands: self.commands.clone(),
+            ui: self.ui.clone(),
             ui_commands: self.ui_commands.clone(),
             camera_position: self.camera_position,
             camera_rotation: self.camera_rotation,

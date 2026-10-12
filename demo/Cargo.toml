@@ -2,7 +2,7 @@
     edition.workspace=true
     license.workspace=true
     name="demo"
-    version="0.1.2"
+    version="0.1.3"
 
 [package.metadata.android]
     build_targets = ["aarch64-linux-android", "armv7-linux-androideabi"]
@@ -30,8 +30,8 @@
 
 [package.metadata.apple]
     app_id="com.frank1o3.renderingengine.demo"
-    bundle_version="0.1.2"
-    bundle_version_short="0.1.2"
+    bundle_version="0.1.3"
+    bundle_version_short="0.1.3"
 
 [lib]
     crate-type=["cdylib", "rlib"]

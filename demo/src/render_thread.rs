@@ -19,15 +19,12 @@ use rendering_engine::render::frame_data::FrameData;
 use rendering_engine::render::pipeline::PipelineState;
 use rendering_engine::render::renderer::{MeshId, Renderer};
 use rendering_engine::render::scene::{ObjectHandle, ObjectKind};
-use rendering_engine::render::{BlendFactor, CullMode, DepthFunc};
 use rendering_engine::resources::mesh::MeshData;
 
-use crate::meshes::create_wireframe_button_mesh;
 use crate::{
-    meshes::{create_button_quad_mesh, create_quad_mesh, create_vsync_button_mesh},
     shaders::SHADERS,
     state::Assets,
-    voxel::chunk::ChunkPos,
+    voxel::chunk::{CHUNK_SIZE_X, CHUNK_SIZE_Z, ChunkPos},
 };
 
 pub enum RenderCommand {
@@ -41,12 +38,9 @@ pub enum RenderCommand {
 struct ChunkEntry {
     mesh: MeshData,
     gpu: Option<(MeshId, ObjectHandle)>,
-    invisible_frames: u32,
 }
 
 const MAX_CHUNK_GPU_UPLOADS_PER_FRAME: usize = 3;
-const MAX_CHUNK_GPU_EVICTIONS_PER_FRAME: usize = 3;
-const INVISIBLE_GRACE_FRAMES: u32 = 5;
 
 pub fn start_render_thread(
     not_current: NotCurrentContext,
@@ -83,17 +77,11 @@ pub fn start_render_thread(
 
         let mut renderer = Renderer::new(gl, read_handle);
 
-        let quad_mesh = renderer.load_mesh(create_quad_mesh());
-        let button_quad_mesh = renderer.load_mesh(create_button_quad_mesh());
-        let vsync_button_mesh = renderer.load_mesh(create_vsync_button_mesh());
-        let wireframe_button_mesh = renderer.load_mesh(create_wireframe_button_mesh());
-
         let shader_map = renderer
             .load_shaders_from_include_dir(&SHADERS)
             .expect("Failed to load shaders");
 
         let lit_shader = *shader_map.get("lit").expect("Missing lit shader");
-        let ui_shader = *shader_map.get("ui").expect("Missing ui shader");
 
         // ─── Skybox setup ──────────────────────────────────────────────
         let skybox_shader_id = *shader_map.get("skybox").expect("Missing skybox shader");
@@ -103,9 +91,11 @@ pub fn start_render_thread(
         renderer.skybox = Some(SkyboxPipeline::new(renderer.context(), skybox_shader_id));
         renderer.enable_skybox(true);
         renderer.set_skybox_color(glam::Vec3::new(0.5, 0.7, 1.0));
+        renderer.set_skybox_cloud_coverage(0.42);
 
         // Sun parameters
-        let sun_dir = glam::Vec3::new(0.6, 0.8, 0.4).normalize();
+        // Keep the demo sun inside the initial forward view (camera faces -Z).
+        let sun_dir = glam::Vec3::new(0.25, 0.3, -0.92).normalize();
         let sun_color = glam::Vec3::new(1.0, 0.9, 0.6);
         let sun_size = 0.1;
 
@@ -125,28 +115,7 @@ pub fn start_render_thread(
         // ─── Materials ────────────────────────────────────────────────────
         let terrain_material =
             renderer.create_material(lit_shader, PipelineState::default_opaque(lit_shader.0));
-        let ui_pipeline = PipelineState {
-            shader_id: ui_shader.0,
-            cull_mode: CullMode::None,
-            depth_test: false,
-            depth_write: false,
-            depth_func: DepthFunc::Less,
-            blend_enabled: true,
-            src_factor: BlendFactor::SrcAlpha,
-            dst_factor: BlendFactor::OneMinusSrcAlpha,
-        };
-        let ui_material = renderer.create_material(ui_shader, ui_pipeline);
-
-        let assets = Assets {
-            quad_mesh: quad_mesh.expect("quad mesh should be loaded"),
-            button_quad_mesh: button_quad_mesh.expect("button quad mesh should be loaded"),
-            vsync_button_mesh: vsync_button_mesh.expect("vsync button quad mesh should be loaded"),
-            wireframe_button_mesh: wireframe_button_mesh
-                .expect("wireframe button quad mesh should be loaded"),
-            terrain_material,
-            ui_material,
-            lit_shader,
-        };
+        let assets = Assets { terrain_material };
 
         if assets_tx.send(assets).is_err() {
             return;
@@ -171,9 +140,23 @@ pub fn start_render_thread(
                     if scan_counter % 4 == 0 {
                         if let Some(frustum) = renderer.current_frustum() {
                             let mut upload_budget = MAX_CHUNK_GPU_UPLOADS_PER_FRAME;
-                            let mut evict_budget = MAX_CHUNK_GPU_EVICTIONS_PER_FRAME;
+                            let camera = renderer.current_camera_position();
+                            let camera_chunk = ChunkPos {
+                                x: (camera.x / CHUNK_SIZE_X as f32).floor() as i32,
+                                z: (camera.z / CHUNK_SIZE_Z as f32).floor() as i32,
+                            };
+                            let mut ordered_positions: Vec<_> =
+                                chunk_entries.keys().copied().collect();
+                            ordered_positions.sort_by_key(|pos| {
+                                let dx = pos.x - camera_chunk.x;
+                                let dz = pos.z - camera_chunk.z;
+                                (dx * dx + dz * dz, dz, dx)
+                            });
 
-                            for (pos, entry) in chunk_entries.iter_mut() {
+                            for pos in ordered_positions {
+                                let Some(entry) = chunk_entries.get_mut(&pos) else {
+                                    continue;
+                                };
                                 let visible = pos.is_visible(&frustum);
 
                                 if entry.gpu.is_none() {
@@ -188,7 +171,6 @@ pub fn start_render_thread(
                                             );
                                             renderer.set_position(obj, pos.world_origin());
                                             entry.gpu = Some((mesh_id, obj));
-                                            entry.invisible_frames = 0;
                                             upload_budget -= 1;
                                         } else {
                                             log::warn!(
@@ -197,19 +179,6 @@ pub fn start_render_thread(
                                                 pos
                                             );
                                         }
-                                    }
-                                } else if visible {
-                                    entry.invisible_frames = 0;
-                                } else {
-                                    entry.invisible_frames += 1;
-                                    if entry.invisible_frames > INVISIBLE_GRACE_FRAMES
-                                        && evict_budget > 0
-                                    {
-                                        if let Some((mesh_id, obj)) = entry.gpu.take() {
-                                            renderer.remove_object(obj);
-                                            renderer.unload_mesh(mesh_id);
-                                        }
-                                        evict_budget -= 1;
                                     }
                                 }
                             }
@@ -250,14 +219,7 @@ pub fn start_render_thread(
                 }
 
                 Ok(RenderCommand::AddChunk { pos, mesh }) => {
-                    chunk_entries.insert(
-                        pos,
-                        ChunkEntry {
-                            mesh,
-                            gpu: None,
-                            invisible_frames: 0,
-                        },
-                    );
+                    chunk_entries.insert(pos, ChunkEntry { mesh, gpu: None });
                 }
 
                 Ok(RenderCommand::RemoveChunks(positions)) => {

@@ -28,6 +28,9 @@ The goal of this project is to build a lightweight, modular, and flexible render
 - **Fullscreen Skybox Pass**
   - Pre-pass skybox pipeline with `LEQUAL` depth testing and inverse view-projection uniform upload.
 
+- **Dedicated Screen-Space UI**
+  - Pixel-coordinate draw list with its own shader and buffers, separate from scene meshes and camera transforms.
+
 - **Light Uniform Block**
   - Renderer-managed std140 UBO for up to 16 directional, point, or spot lights.
   - Shaders opt into the shared block layout; the demo uses it for diffuse lighting.
@@ -101,8 +104,8 @@ cargo run --bin desktop
 ### What the Demo Exercises
 
 The voxel terrain demo combines procedural terrain generation and greedy
-chunk meshing on worker threads with frustum-prioritized chunk loading,
-GPU-side chunk upload/eviction, instanced scene rendering, directional
+chunk meshing on worker threads with center-out radial chunk loading,
+frustum-culled GPU chunk upload/eviction, instanced scene rendering, directional
 lighting, a procedural skybox, and an on-screen frame-rate display. The
 wireframe and vertical-sync toggles let you inspect geometry and presentation
 timing. Desktop tuning values, including render distance, are stored in

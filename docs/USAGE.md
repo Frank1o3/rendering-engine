@@ -155,6 +155,21 @@ renderer.set_position(handle, glam::Vec3::new(0.0, 1.0, 0.0));
 
 ## 5. Advanced Engine Features
 
+### Screen-Space UI
+
+`FrameData.ui` is a dedicated overlay draw list. Its pixel coordinates start
+at the top-left of the window; the renderer uses its own shader and buffers,
+so these rectangles do not use scene meshes, camera transforms, or world
+depth. Text renderers can add glyph quads to the same list.
+
+```rust
+let frame = write_handle.write_slot();
+frame.ui.clear();
+frame.ui.rect(12.0, 12.0, 180.0, 36.0, [20, 24, 32, 210]);
+// Add each glyph as screen-space rectangles or atlas-backed quads.
+write_handle.publish();
+```
+
 ### Skybox Pass
 Enable a fullscreen skybox pass with procedural or cubemap shaders:
 
@@ -163,6 +178,12 @@ let skybox_shader = renderer.setup_skybox(skybox_vert_src, skybox_frag_src);
 renderer.enable_skybox(true);
 renderer.set_skybox_color(glam::Vec3::new(0.5, 0.7, 1.0));
 ```
+
+The built-in skybox shader draws a sun disk and a scrolling procedural cloud
+layer from the view direction. The demo sets `uSunDir`, `uSunColor`, and
+`uSunSize`, then calls `set_skybox_cloud_coverage(0.42)`. Coverage ranges from
+zero (off) to one (dense). Change the sky color with `set_skybox_color`; use
+scene meshes or billboards when clouds need parallax or world-space depth.
 
 ### Offscreen Render Targets (FBOs)
 Render to offscreen framebuffers:

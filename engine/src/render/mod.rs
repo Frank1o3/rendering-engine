@@ -10,6 +10,7 @@ pub mod renderer;
 pub mod scene;
 pub mod skybox;
 pub mod stats;
+pub mod ui;
 
 pub use draw_indirect::{DrawElementsIndirectCommand, IndirectBuffer, MdiStrategy};
 pub use frame_data::{FrameData, InstanceData, RenderCommand};
@@ -28,3 +29,4 @@ pub type RenderConfig = RendererConfig;
 pub use scene::{ObjectHandle, ObjectKind, Scene, SortedInstance};
 pub use skybox::{SkyboxId, SkyboxPipeline};
 pub use stats::FrameStats;
+pub use ui::{UiDrawList, UiVertex};

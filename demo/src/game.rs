@@ -1,8 +1,4 @@
 use glam::{EulerRot, Quat, Vec3};
-use rendering_engine::core::math::{
-    camera_to_projection_matrix, camera_to_view_matrix, extract_frustum_planes,
-};
-use rendering_engine::render::frame_data::RenderCommand as EngineRenderCommand;
 
 use crate::{font::emit_ui_text, state::DemoState};
 
@@ -38,17 +34,7 @@ pub fn update(state: &mut DemoState, dt: f32) {
     }
     state.camera_pos += velocity * dt;
 
-    let view = camera_to_view_matrix(state.camera_pos, cam_rot);
-    let proj = camera_to_projection_matrix(
-        state.config.fov_degrees.to_radians(),
-        state.width as f32 / state.height as f32,
-        state.config.near_plane,
-        state.config.far_plane,
-    );
-    let vp = proj * view;
-    let frustum = extract_frustum_planes(vp);
-
-    state.world.update(state.camera_pos, forward, &frustum);
+    state.world.update(state.camera_pos);
 }
 
 pub fn build_frame(state: &mut DemoState) {
@@ -56,6 +42,7 @@ pub fn build_frame(state: &mut DemoState) {
 
     let frame = state.write_handle.write_slot();
     frame.commands.clear();
+    frame.ui.clear();
     frame.ui_commands.clear();
 
     frame.camera_position = state.camera_pos;
@@ -66,40 +53,23 @@ pub fn build_frame(state: &mut DemoState) {
     frame.camera_far = state.config.far_plane;
 
     emit_ui_text(
-        &mut frame.ui_commands,
-        state.assets.quad_mesh,
-        state.assets.ui_material,
+        &mut frame.ui,
         20.0,
         30.0,
         &format!("{:.0} FPS", state.current_fps),
         8.0,
+        [255, 255, 255, 255],
     );
 
     if cfg!(target_os = "android") {
         let r = crate::touch::vsync_button_rect(state.width as f32, state.height as f32);
-        frame.ui_commands.push(EngineRenderCommand {
-            mesh_id: state.assets.vsync_button_mesh,
-            material_id: state.assets.ui_material,
-            position: Vec3::new(r.x, r.y, 0.0),
-            rotation: Quat::IDENTITY,
-            scale: r.w,
-        });
+        frame.ui.rect(r.x, r.y, r.w, r.h, [220, 35, 35, 220]);
         let r = crate::touch::wireframe_button_rect(state.width as f32, state.height as f32);
-        frame.ui_commands.push(EngineRenderCommand {
-            mesh_id: state.assets.wireframe_button_mesh,
-            material_id: state.assets.ui_material,
-            position: Vec3::new(r.x, r.y, 0.0),
-            rotation: Quat::IDENTITY,
-            scale: r.w,
-        });
+        frame.ui.rect(r.x, r.y, r.w, r.h, [35, 35, 220, 220]);
         for (_, rect) in crate::touch::button_rects(state.width as f32, state.height as f32) {
-            frame.ui_commands.push(EngineRenderCommand {
-                mesh_id: state.assets.button_quad_mesh,
-                material_id: state.assets.ui_material,
-                position: Vec3::new(rect.x, rect.y, 0.0),
-                rotation: Quat::IDENTITY,
-                scale: rect.w,
-            });
+            frame
+                .ui
+                .rect(rect.x, rect.y, rect.w, rect.h, [70, 70, 80, 140]);
         }
     }
 
